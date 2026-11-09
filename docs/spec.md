@@ -51,7 +51,7 @@ On every cache miss or `force_sync`:
 3. If `locked` → `bw unlock` (master password from secret)
 4. `bw sync`
 5. Read items, compute metrics, update cache
-6. Immediately `bw lock` or `bw logout`
+6. Immediately `bw lock`
 7. On error → retry once, then return error to the caller
 
 Session is never kept open longer than necessary.
