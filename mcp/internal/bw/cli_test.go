@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"bw-mcp/internal/secrets"
 )
 
 func TestLoginAPIKeyPutsSecretsOnlyInChildEnv(t *testing.T) {
@@ -212,7 +210,7 @@ func TestListItemsFiltersLoginAndTrash(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("items = %+v", items)
 	}
-	if items[0].ID != "login-1" || folderID(items[0].FolderID) != "folder-1" || items[0].Login == nil || items[0].Login.Username != "d@example.com" {
+	if items[0].ID != "login-1" || folderID(items[0].FolderID) != "folder-1" || items[0].Login == nil {
 		t.Fatalf("first = %+v", items[0])
 	}
 	if items[0].Login.Password != password || items[0].Login.PasswordRevisionDate == nil || *items[0].Login.PasswordRevisionDate != "2024-01-02T03:04:05.000Z" {
@@ -364,11 +362,14 @@ func TestOpenLockedUnlocksAndCloseDropsToken(t *testing.T) {
 		unlockKeys: []string{"sess-1"},
 	}
 	cli := &CLI{Runner: runner, DataDir: "/var/lib/bw"}
-	if err := cli.Open(context.Background(), testSecrets()); err != nil {
+	source := &testSecretSource{masterPassword: []byte("master-password")}
+	if err := cli.Open(context.Background(), source); err != nil {
 		t.Fatal(err)
 	}
-	if string(cli.session) != "sess-1" || cli.userID != "user-1" {
-		t.Fatalf("open session %q user %q", cli.session, cli.userID)
+	assertSecretLoads(t, source.loaded, "master password")
+	assertSecretBuffersWiped(t, source.buffers)
+	if string(cli.session) != "sess-1" {
+		t.Fatalf("open session %q", cli.session)
 	}
 	if err := cli.Sync(context.Background()); err != nil {
 		t.Fatal(err)
@@ -376,8 +377,8 @@ func TestOpenLockedUnlocksAndCloseDropsToken(t *testing.T) {
 	if err := cli.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if cli.session != nil || cli.userID != "" {
-		t.Fatalf("token still present after close: %q %q", cli.session, cli.userID)
+	if cli.session != nil {
+		t.Fatalf("token still present after close: %q", cli.session)
 	}
 	if err := cli.Sync(context.Background()); err == nil || !strings.Contains(err.Error(), "not open") {
 		t.Fatalf("sync after close = %v", err)
@@ -395,13 +396,13 @@ func TestOpenLoginThenUnlock(t *testing.T) {
 		unlockKeys: []string{"sess-1"},
 	}
 	cli := &CLI{Runner: runner, DataDir: "/var/lib/bw"}
-	if err := cli.Open(context.Background(), testSecrets()); err != nil {
+	source := testSecrets()
+	if err := cli.Open(context.Background(), source); err != nil {
 		t.Fatal(err)
 	}
+	assertSecretLoads(t, source.loaded, "client id", "client secret", "master password")
+	assertSecretBuffersWiped(t, source.buffers)
 	defer func() { _ = cli.Close(context.Background()) }()
-	if cli.userID != "user-after-login" {
-		t.Fatalf("user = %q", cli.userID)
-	}
 	assertCalls(t, runner.calls, []string{"status", "login --apikey", "status", "unlock --passwordenv BW_PASSWORD --raw"})
 	login := runner.envs[1]
 	assertEnv(t, login, []string{
@@ -422,10 +423,12 @@ func TestOpenRejectsUnauthenticatedAfterLogin(t *testing.T) {
 		userIDs:  []string{"", ""},
 	}
 	cli := &CLI{Runner: runner, DataDir: "/var/lib/bw"}
-	err := cli.Open(context.Background(), testSecrets())
+	source := testSecrets()
+	err := cli.Open(context.Background(), source)
 	if err == nil || !strings.Contains(err.Error(), "expected authenticated") {
 		t.Fatalf("error = %v", err)
 	}
+	assertSecretLoads(t, source.loaded, "client id", "client secret")
 	assertCalls(t, runner.calls, []string{"status", "login --apikey", "status"})
 }
 
@@ -452,9 +455,11 @@ func TestOpenUnlockedDoesNothing(t *testing.T) {
 		userIDs:  []string{"user-1"},
 	}
 	cli := &CLI{Runner: runner, DataDir: "/var/lib/bw"}
-	if err := cli.Open(context.Background(), testSecrets()); err != nil {
+	source := &testSecretSource{}
+	if err := cli.Open(context.Background(), source); err != nil {
 		t.Fatal(err)
 	}
+	assertSecretLoads(t, source.loaded)
 	if cli.session != nil {
 		t.Fatalf("session = %q", cli.session)
 	}
@@ -476,8 +481,8 @@ func TestCloseLockFailureDropsToken(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "lock failed") {
 		t.Fatalf("error = %v", err)
 	}
-	if cli.session != nil || cli.userID != "" {
-		t.Fatalf("token kept after failed close: %q %q", cli.session, cli.userID)
+	if cli.session != nil {
+		t.Fatalf("token kept after failed close: %q", cli.session)
 	}
 	if strings.Contains(err.Error(), "sess-1") {
 		t.Fatalf("error contains session: %v", err)
@@ -486,15 +491,15 @@ func TestCloseLockFailureDropsToken(t *testing.T) {
 }
 
 func TestOpenRejectsEmptySecrets(t *testing.T) {
-	runner := &openRunner{}
+	runner := &openRunner{statuses: []string{StatusLocked}, userIDs: []string{"user-1"}}
 	cli := &CLI{Runner: runner, DataDir: "/var/lib/bw"}
-	err := cli.Open(context.Background(), secrets.Secrets{ClientID: []byte("id")})
-	if err == nil {
-		t.Fatal("expected error")
+	source := &testSecretSource{}
+	err := cli.Open(context.Background(), source)
+	if err == nil || !strings.Contains(err.Error(), "master password is required") {
+		t.Fatalf("error = %v", err)
 	}
-	if len(runner.calls) != 0 {
-		t.Fatalf("calls = %#v", runner.calls)
-	}
+	assertSecretLoads(t, source.loaded, "master password")
+	assertCalls(t, runner.calls, []string{"status"})
 }
 
 func TestOpenAlreadyOpenDoesNotUnlockAgain(t *testing.T) {
@@ -595,11 +600,56 @@ func TestOpenCanceled(t *testing.T) {
 	}
 }
 
-func testSecrets() secrets.Secrets {
-	return secrets.Secrets{
-		ClientID:       []byte("client-id"),
-		ClientSecret:   []byte("client-secret"),
-		MasterPassword: []byte("master-password"),
+func testSecrets() *testSecretSource {
+	return &testSecretSource{
+		clientID:       []byte("client-id"),
+		clientSecret:   []byte("client-secret"),
+		masterPassword: []byte("master-password"),
+	}
+}
+
+type testSecretSource struct {
+	clientID       []byte
+	clientSecret   []byte
+	masterPassword []byte
+	loaded         []string
+	buffers        [][]byte
+}
+
+func (s *testSecretSource) LoadClientID() ([]byte, error) {
+	return s.load("client id", s.clientID)
+}
+
+func (s *testSecretSource) LoadClientSecret() ([]byte, error) {
+	return s.load("client secret", s.clientSecret)
+}
+
+func (s *testSecretSource) LoadMasterPassword() ([]byte, error) {
+	return s.load("master password", s.masterPassword)
+}
+
+func (s *testSecretSource) load(name string, value []byte) ([]byte, error) {
+	s.loaded = append(s.loaded, name)
+	loaded := bytes.Clone(value)
+	s.buffers = append(s.buffers, loaded)
+	return loaded, nil
+}
+
+func assertSecretLoads(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("loaded secrets = %#v, want %#v", got, want)
+	}
+}
+
+func assertSecretBuffersWiped(t *testing.T, buffers [][]byte) {
+	t.Helper()
+	for i, buffer := range buffers {
+		for _, b := range buffer {
+			if b != 0 {
+				t.Fatalf("secret buffer %d was not wiped", i)
+			}
+		}
 	}
 }
 
@@ -688,7 +738,7 @@ func (o *openRunner) Run(ctx context.Context, args []string, env []string) (Resu
 		return Result{ExitCode: 1, Stderr: []byte("unexpected " + cmd)}, &ExitError{ExitCode: 1}
 	}
 }
-func TestReadProjectsLogins(t *testing.T) {
+func TestReadProjectsItems(t *testing.T) {
 	const (
 		password     = `cur"rent\secret`
 		username     = "d@example.com"
@@ -817,27 +867,20 @@ func TestReadProjectsLogins(t *testing.T) {
 		map[string]any{"id": "", "name": "ignored"},
 	}
 
-	v := readCLI(t, items, folders, []byte(sessionKey), now)
-	logins := v.Logins
-	if v.UserID != "user-1" {
-		t.Fatalf("user = %q", v.UserID)
-	}
-	if len(logins) != 4 {
-		t.Fatalf("logins = %d, want 4", len(logins))
+	got := readCLI(t, items, folders, []byte(sessionKey), now)
+	if len(got) != 4 {
+		t.Fatalf("items = %d, want 4", len(got))
 	}
 
-	gotIDs := []string{logins[0].ID, logins[1].ID, logins[2].ID, logins[3].ID}
+	gotIDs := []string{got[0].ID, got[1].ID, got[2].ID, got[3].ID}
 	wantIDs := []string{"github", "legacy", "unknown", "future"}
 	if strings.Join(gotIDs, ",") != strings.Join(wantIDs, ",") {
 		t.Fatalf("ids = %#v", gotIDs)
 	}
 
-	github := logins[0]
-	if github.Name != "GitHub" || github.Username != username {
-		t.Fatalf("github = %+v", github.Public())
-	}
-	if string(github.Password()) != password {
-		t.Fatalf("password not retained")
+	github := got[0]
+	if github.Name != "GitHub" {
+		t.Fatalf("github = %+v", github)
 	}
 	if github.Folder == nil || *github.Folder != "Work" {
 		t.Fatalf("folder = %v", github.Folder)
@@ -846,25 +889,21 @@ func TestReadProjectsLogins(t *testing.T) {
 		t.Fatalf("age = %d, want 30 from passwordRevisionDate", github.AgeDays)
 	}
 
-	legacy := logins[1]
+	legacy := got[1]
 	if legacy.Folder != nil {
 		t.Fatalf("legacy folder = %v", *legacy.Folder)
 	}
 	if legacy.AgeDays != 61 {
 		t.Fatalf("legacy age = %d, want 61 from creationDate", legacy.AgeDays)
 	}
-	if string(legacy.Password()) != legacyPass {
-		t.Fatal("legacy password not retained")
+	if got[2].Folder != nil {
+		t.Fatalf("unknown folder = %v, want null", *got[2].Folder)
 	}
-
-	if logins[2].Folder != nil {
-		t.Fatalf("unknown folder = %v, want null", *logins[2].Folder)
+	if got[2].AgeDays != 10 {
+		t.Fatalf("unknown age = %d, want 10", got[2].AgeDays)
 	}
-	if logins[2].AgeDays != 10 {
-		t.Fatalf("unknown age = %d, want 10", logins[2].AgeDays)
-	}
-	if logins[3].AgeDays != 0 {
-		t.Fatalf("future age = %d, want 0", logins[3].AgeDays)
+	if got[3].AgeDays != 0 {
+		t.Fatalf("future age = %d, want 0", got[3].AgeDays)
 	}
 
 	secrets := []string{
@@ -873,18 +912,9 @@ func TestReadProjectsLogins(t *testing.T) {
 		trashPass, noteType, noLogin, missingID, sessionKey, "legacy-user",
 		"revisionDate", "passwordRevisionDate", "totp",
 	}
-	publicJSON := mustJSON(t, Items(logins))
+	publicJSON := mustJSON(t, got)
 	assertNoSecrets(t, string(publicJSON), secrets)
-	assertNoSecrets(t, fmt.Sprintf("%v %+v %#v %s", github, github, github, github), secrets)
-	assertNoSecrets(t, fmt.Sprint(logins), secrets)
-	assertNoSecrets(t, fmt.Sprintf("%v %+v %#v", v, v, v), secrets)
-
-	if string(mustJSON(t, github.Public())) != `{"id":"github","name":"GitHub","folder":"Work","age_days":30}` {
-		t.Fatalf("github public = %s", mustJSON(t, github.Public()))
-	}
-	if string(mustJSON(t, legacy.Public())) != `{"id":"legacy","name":"Legacy","folder":null,"age_days":61}` {
-		t.Fatalf("legacy public = %s", mustJSON(t, legacy.Public()))
-	}
+	assertNoSecrets(t, fmt.Sprintf("%v %+v %#v", got, got, got), secrets)
 	var decoded []map[string]any
 	if err := json.Unmarshal(publicJSON, &decoded); err != nil {
 		t.Fatal(err)
@@ -899,27 +929,6 @@ func TestReadProjectsLogins(t *testing.T) {
 		}
 	}
 
-	encoded, err := json.Marshal(github)
-	if err == nil {
-		t.Fatalf("login encoded: %s", encoded)
-	}
-	assertNoSecrets(t, err.Error(), secrets)
-	if _, err := json.Marshal(logins); err == nil {
-		t.Fatal("login slice encoded")
-	}
-	if _, err := json.Marshal(v); err == nil {
-		t.Fatal("vault encoded")
-	}
-
-	held := github.Password()
-	logins[0].Zero()
-	if len(logins[0].Password()) != 0 {
-		t.Fatal("password still present after Zero")
-	}
-	if string(held) != string(bytes.Repeat([]byte{0}, len(password))) {
-		t.Fatal("Zero did not clear the password buffer")
-	}
-	logins[0].Zero()
 }
 
 func TestReadAgeBoundaries(t *testing.T) {
@@ -947,9 +956,9 @@ func TestReadAgeBoundaries(t *testing.T) {
 					"passwordRevisionDate": tc.when,
 				},
 			}}
-			logins := readCLI(t, items, []any{}, []byte("session-key"), now).Logins
-			if len(logins) != 1 || logins[0].AgeDays != tc.want {
-				t.Fatalf("age = %v, want %d", ages(logins), tc.want)
+			got := readCLI(t, items, []any{}, []byte("session-key"), now)
+			if len(got) != 1 || got[0].AgeDays != tc.want {
+				t.Fatalf("age = %v, want %d", ages(got), tc.want)
 			}
 		})
 	}
@@ -999,7 +1008,7 @@ func TestReadInvalidDate(t *testing.T) {
 	}
 }
 
-func TestReadStopsOnDateErrorAfterZeroing(t *testing.T) {
+func TestReadStopsOnDateError(t *testing.T) {
 	items := []any{
 		map[string]any{
 			"id":           "ok",
@@ -1026,7 +1035,6 @@ func TestReadStopsOnDateErrorAfterZeroing(t *testing.T) {
 }
 
 func TestOpenSyncReadClose(t *testing.T) {
-	const sessionKey = "sess-from-unlock"
 	now := mustTime(t, "2024-01-31T00:00:00Z")
 	items, err := json.Marshal([]any{map[string]any{
 		"id":           "github",
@@ -1056,7 +1064,7 @@ func TestOpenSyncReadClose(t *testing.T) {
 	if err := cli.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	v, err := cli.Read(context.Background(), now)
+	got, err := cli.Read(context.Background(), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1066,32 +1074,27 @@ func TestOpenSyncReadClose(t *testing.T) {
 	if cli.session != nil {
 		t.Fatal("session token kept after close")
 	}
-	logins := v.Logins
-	if v.UserID != "user-1" || len(logins) != 1 || logins[0].AgeDays != 30 || logins[0].Folder == nil || *logins[0].Folder != "Work" {
-		t.Fatalf("vault = %#v", Items(logins))
+	if len(got) != 1 || got[0].AgeDays != 30 || got[0].Folder == nil || *got[0].Folder != "Work" {
+		t.Fatalf("items = %#v", got)
 	}
-	if string(logins[0].Password()) != "inside-secret" {
-		t.Fatal("password not retained")
+	if strings.Contains(string(mustJSON(t, got)), "inside-secret") {
+		t.Fatal("password left the CLI read layer")
 	}
 	wantCalls := []string{"status", "unlock --passwordenv BW_PASSWORD --raw", "sync", "list folders", "list items", "lock"}
 	if strings.Join(runner.calls, ",") != strings.Join(wantCalls, ",") {
 		t.Fatalf("calls = %#v", runner.calls)
 	}
-	logged := fmt.Sprintf("%v %+v %#v", logins[0], logins[0], logins[0])
-	if strings.Contains(logged, "inside-secret") || strings.Contains(logged, sessionKey) {
-		t.Fatalf("log leaked: %s", logged)
-	}
 }
 
 func TestReadListsFoldersBeforeItems(t *testing.T) {
 	runner := &orderRunner{}
-	cli := &CLI{Runner: runner, DataDir: "/var/lib/bw", session: []byte("sess-value"), userID: "user-1"}
-	v, err := cli.Read(context.Background(), mustTime(t, "2024-01-31T00:00:00Z"))
+	cli := &CLI{Runner: runner, DataDir: "/var/lib/bw", session: []byte("sess-value")}
+	items, err := cli.Read(context.Background(), mustTime(t, "2024-01-31T00:00:00Z"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(v.Logins) != 0 {
-		t.Fatalf("logins = %+v", Items(v.Logins))
+	if len(items) != 0 {
+		t.Fatalf("items = %+v", items)
 	}
 	if strings.Join(runner.calls, ",") != "list folders,list items" {
 		t.Fatalf("calls = %#v", runner.calls)
@@ -1104,7 +1107,7 @@ func TestReadListsFoldersBeforeItems(t *testing.T) {
 func TestReadWrapsListErrors(t *testing.T) {
 	now := mustTime(t, "2024-01-31T00:00:00Z")
 	folders := &failRunner{errOn: "list folders", msg: "folders down"}
-	cli := &CLI{Runner: folders, DataDir: "/var/lib/bw", session: []byte("sess-value"), userID: "user-1"}
+	cli := &CLI{Runner: folders, DataDir: "/var/lib/bw", session: []byte("sess-value")}
 	_, err := cli.Read(context.Background(), now)
 	if err == nil || !strings.Contains(err.Error(), "list folders") || !strings.Contains(err.Error(), "folders down") {
 		t.Fatalf("error = %v", err)
@@ -1114,7 +1117,7 @@ func TestReadWrapsListErrors(t *testing.T) {
 	}
 
 	items := &failRunner{errOn: "list items", msg: "items down"}
-	cli = &CLI{Runner: items, DataDir: "/var/lib/bw", session: []byte("sess-value"), userID: "user-1"}
+	cli = &CLI{Runner: items, DataDir: "/var/lib/bw", session: []byte("sess-value")}
 	_, err = cli.Read(context.Background(), now)
 	if err == nil || !strings.Contains(err.Error(), "list items") || !strings.Contains(err.Error(), "items down") {
 		t.Fatalf("error = %v", err)
@@ -1138,7 +1141,7 @@ func TestReadRejectsBadArgs(t *testing.T) {
 		}
 	})
 	t.Run("zero now", func(t *testing.T) {
-		cli := &CLI{Runner: r, DataDir: "/var/lib/bw", session: []byte("s"), userID: "user-1"}
+		cli := &CLI{Runner: r, DataDir: "/var/lib/bw", session: []byte("s")}
 		_, err := cli.Read(context.Background(), time.Time{})
 		if err == nil || !strings.Contains(err.Error(), "now is zero") {
 			t.Fatalf("error = %v", err)
@@ -1153,7 +1156,7 @@ func TestReadCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	r := &orderRunner{}
-	cli := &CLI{Runner: r, DataDir: "/var/lib/bw", session: []byte("sess-value"), userID: "user-1"}
+	cli := &CLI{Runner: r, DataDir: "/var/lib/bw", session: []byte("sess-value")}
 	_, err := cli.Read(ctx, mustTime(t, "2024-01-31T00:00:00Z"))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v", err)
@@ -1163,7 +1166,7 @@ func TestReadCanceledContext(t *testing.T) {
 	}
 }
 
-func readCLI(t *testing.T, items, folders []any, session []byte, now time.Time) Vault {
+func readCLI(t *testing.T, items, folders []any, session []byte, now time.Time) []Item {
 	t.Helper()
 	v, err := readCLIErr(t, items, folders, session, now)
 	if err != nil {
@@ -1172,7 +1175,7 @@ func readCLI(t *testing.T, items, folders []any, session []byte, now time.Time) 
 	return v
 }
 
-func readCLIErr(t *testing.T, items, folders []any, session []byte, now time.Time) (Vault, error) {
+func readCLIErr(t *testing.T, items, folders []any, session []byte, now time.Time) ([]Item, error) {
 	t.Helper()
 	itemBody, err := json.Marshal(items)
 	if err != nil {
@@ -1189,7 +1192,6 @@ func readCLIErr(t *testing.T, items, folders []any, session []byte, now time.Tim
 		}},
 		DataDir: "/var/lib/bw",
 		session: append([]byte(nil), session...),
-		userID:  "user-1",
 	}
 	return cli.Read(context.Background(), now)
 }
@@ -1221,10 +1223,10 @@ func assertNoSecrets(t *testing.T, got string, secrets []string) {
 	}
 }
 
-func ages(logins []Login) []int {
-	out := make([]int, len(logins))
-	for i := range logins {
-		out[i] = logins[i].AgeDays
+func ages(items []Item) []int {
+	out := make([]int, len(items))
+	for i := range items {
+		out[i] = items[i].AgeDays
 	}
 	return out
 }

@@ -26,13 +26,13 @@ type Status struct {
 }
 
 // Cache is the prototype item store.
-// It stores only public items. Passwords are zeroed before a refresh returns.
-// A refresh opens the CLI, syncs, reads the vault model, and closes.
+// It stores only public items. The CLI clears password buffers before returning items.
+// A refresh opens the CLI, syncs, reads items, and closes.
 // The whole refresh is retried once. Individual bw calls are not retried.
 type Cache struct {
-	cli     *bw.CLI
-	secrets secrets.Secrets
-	now     func() time.Time
+	cli          *bw.CLI
+	secretSource secrets.Source
+	now          func() time.Time
 
 	// refreshMu keeps two bw sessions from interleaving.
 	// It does not collapse concurrent callers into one sync.
@@ -46,14 +46,14 @@ type Cache struct {
 
 // New returns a cache that reads cli.
 // A nil now function uses time.Now.
-func New(cli *bw.CLI, secs secrets.Secrets, now func() time.Time) *Cache {
+func New(cli *bw.CLI, source secrets.Source, now func() time.Time) *Cache {
 	if now == nil {
 		now = time.Now
 	}
 	return &Cache{
-		cli:     cli,
-		secrets: secs,
-		now:     now,
+		cli:          cli,
+		secretSource: source,
+		now:          now,
 	}
 }
 
@@ -89,8 +89,7 @@ func (c *Cache) GetItem(id string) (bw.Item, error) {
 	return bw.Item{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 }
 
-// ForceSync opens the CLI, syncs, reads the vault model, and replaces the cached items.
-// Each Login is zeroed before this returns, including on error.
+// ForceSync opens the CLI, syncs, reads public items, and replaces the cache.
 func (c *Cache) ForceSync(ctx context.Context) (time.Time, int, error) {
 	if c == nil || c.cli == nil {
 		return time.Time{}, 0, errors.New("cache: cli is nil")
@@ -98,11 +97,7 @@ func (c *Cache) ForceSync(ctx context.Context) (time.Time, int, error) {
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
 
-	var items []bw.Item
-	err := c.withVault(ctx, func(v bw.Vault) error {
-		items = bw.Items(v.Logins)
-		return nil
-	})
+	items, err := c.withItems(ctx)
 	if err != nil {
 		return time.Time{}, 0, err
 	}
@@ -138,24 +133,23 @@ func (c *Cache) Status(ctx context.Context) (Status, error) {
 	}, nil
 }
 
-// withVault opens, syncs, reads, and closes.
+// withItems opens, syncs, reads public items, and closes.
 // The whole operation is retried once. A new Open invalidates older session tokens,
 // so a token is never reused across attempts. After success the CLI is locked.
-// fn may be called twice if the first attempt fails. fn must not retain Login passwords.
-func (c *Cache) withVault(ctx context.Context, fn func(bw.Vault) error) error {
-	err := c.once(ctx, fn)
+func (c *Cache) withItems(ctx context.Context) ([]bw.Item, error) {
+	items, err := c.once(ctx)
 	if err == nil || ctx.Err() != nil {
-		return err
+		return items, err
 	}
-	return c.once(ctx, fn)
+	return c.once(ctx)
 }
 
-func (c *Cache) once(ctx context.Context, fn func(bw.Vault) error) (err error) {
+func (c *Cache) once(ctx context.Context) (items []bw.Item, err error) {
 	if err = ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	if err = c.cli.Open(ctx, c.secrets); err != nil {
-		return err
+	if err = c.cli.Open(ctx, c.secretSource); err != nil {
+		return nil, err
 	}
 	defer func() {
 		if closeErr := c.cli.Close(ctx); closeErr != nil && err == nil {
@@ -163,14 +157,13 @@ func (c *Cache) once(ctx context.Context, fn func(bw.Vault) error) (err error) {
 		}
 	}()
 	if err = c.cli.Sync(ctx); err != nil {
-		return err
+		return nil, err
 	}
-	v, err := c.cli.Read(ctx, c.now())
+	items, err = c.cli.Read(ctx, c.now())
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer zeroLogins(v.Logins)
-	return fn(v)
+	return items, nil
 }
 
 func (c *Cache) snapshot() ([]bw.Item, bool) {
@@ -187,10 +180,4 @@ func ageMinutes(last, now time.Time) int {
 		return 0
 	}
 	return int(now.Sub(last) / time.Minute)
-}
-
-func zeroLogins(logins []bw.Login) {
-	for i := range logins {
-		logins[i].Zero()
-	}
 }

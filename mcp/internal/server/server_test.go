@@ -53,6 +53,28 @@ func TestServerRespondsToPing(t *testing.T) {
 	}
 }
 
+func TestConfiguredDirs(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		t.Setenv(dataDirEnv, "")
+		t.Setenv(secretsDirEnv, "")
+
+		dataDir, secretsDir := configuredDirs()
+		if dataDir != defaultDataDir || secretsDir != defaultSecretsDir {
+			t.Fatalf("configuredDirs() = (%q, %q), want (%q, %q)", dataDir, secretsDir, defaultDataDir, defaultSecretsDir)
+		}
+	})
+
+	t.Run("environment overrides", func(t *testing.T) {
+		t.Setenv(dataDirEnv, "/custom/data")
+		t.Setenv(secretsDirEnv, "/custom/secrets")
+
+		dataDir, secretsDir := configuredDirs()
+		if dataDir != "/custom/data" || secretsDir != "/custom/secrets" {
+			t.Fatalf("configuredDirs() = (%q, %q), want (%q, %q)", dataDir, secretsDir, "/custom/data", "/custom/secrets")
+		}
+	})
+}
+
 func TestHTTPServerRespondsToPing(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	server := New(logger, nil)

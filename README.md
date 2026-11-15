@@ -8,4 +8,4 @@ You talk to it in Telegram. Mark the accounts that matter most, and it will chec
 
 ## MCP server
 
-The MCP server uses Streamable HTTP at `http://localhost:8080/mcp` by default. Run it with `just run-mcp`; set `MCP_ADDR` to change the listen address. To inspect a running server, use `just inspect-mcp`. The endpoint has no authentication, so keep it on a trusted network and do not expose it publicly.
+The MCP server uses Streamable HTTP at `http://localhost:8080/mcp` by default. Run it with `just run-mcp`; set `MCP_ADDR` to change the listen address. Set `BW_DATA_DIR` and `BW_SECRETS_DIR` to override the default Bitwarden data (`/var/lib/bw`) and secret-file (`/run/secrets`) directories. To inspect a running server, use `just inspect-mcp`. The endpoint has no authentication, so keep it on a trusted network and do not expose it publicly.

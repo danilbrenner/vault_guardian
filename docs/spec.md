@@ -37,7 +37,7 @@ Bitwarden CLI + HIBP range API
 
 - Authenticate and unlock Bitwarden CLI using secrets
 - Sync vault on demand
-- Compute metrics for every login item
+- Compute metrics for every login
 - Maintain an in-memory cache
 - Expose a small set of HTTP tools
 - Never return passwords, TOTP, or other sensitive fields
@@ -50,7 +50,7 @@ On every cache miss or `force_sync`:
 2. If `unauthenticated` → `bw login --apikey`
 3. If `locked` → `bw unlock` (master password from secret)
 4. `bw sync`
-5. Read items, compute metrics, update cache
+5. Read logins, compute metrics, update cache
 6. Immediately `bw lock`
 7. On error → retry once, then return error to the caller
 
@@ -66,51 +66,55 @@ Session is never kept open longer than necessary.
 
 ### 3.4 Tools
 
-#### `list_items`
+#### `list_logins`
 
 **Parameters:**
 - `filter` (optional): `"all"` | `"weak"` | `"pwned"` | `"old"` | `"duplicate"`
 - `min_age_days` (optional): number
 
-**Returns:** Array of item summaries:
+**Returns:** An object containing an array of login summaries:
 
 ```json
 {
-  "id": "string",
-  "name": "string",
-  "masked_username": "string",
-  "folder": "string | null",
-  "age_days": "number",
-  "length": "number",
-  "entropy": "number",
-  "strength": "VeryWeak | Weak | Moderate | Strong | VeryStrong",
-  "has_digit": "boolean",
-  "has_lower": "boolean",
-  "has_upper": "boolean",
-  "has_symbol": "boolean",
-  "pwned_count": "number",
-  "hash": "string"
+  "logins": [
+    {
+      "id": "string",
+      "name": "string",
+      "masked_username": "string",
+      "folder": "string | null",
+      "age_days": "number",
+      "length": "number",
+      "entropy": "number",
+      "strength": "VeryWeak | Weak | Moderate | Strong | VeryStrong",
+      "has_digit": "boolean",
+      "has_lower": "boolean",
+      "has_upper": "boolean",
+      "has_symbol": "boolean",
+      "pwned_count": "number",
+      "hash": "string"
+    }
+  ]
 }
 ```
 
-#### `get_item`
+#### `get_login`
 
 **Parameters:** `{ "id": "string" }`
 
-**Returns:** Full metrics for a single item (same fields as above).
+**Returns:** Full metrics for a single login (same fields as above).
 
 #### `get_duplicates`
 
 **Parameters:** none (or optional `min_count`)
 
-**Returns:** Groups of items sharing the same hash:
+**Returns:** Groups of logins sharing the same hash:
 
 ```json
 [
   {
     "hash": "string",
     "count": "number",
-    "items": [
+    "logins": [
       { "id": "string", "name": "string", "masked_username": "string", "folder": "string | null" }
     ]
   }
@@ -125,7 +129,7 @@ Session is never kept open longer than necessary.
 ```json
 {
   "synced_at": "ISO8601 timestamp",
-  "items_count": "number"
+  "logins_count": "number"
 }
 ```
 
@@ -138,7 +142,7 @@ Session is never kept open longer than necessary.
 {
   "last_sync": "ISO8601 timestamp",
   "cache_age_minutes": "number",
-  "items_in_cache": "number",
+  "logins_in_cache": "number",
   "bw_status": "unlocked | locked | unauthenticated"
 }
 ```

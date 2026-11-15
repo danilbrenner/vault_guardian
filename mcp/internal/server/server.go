@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -16,13 +17,16 @@ import (
 )
 
 const (
-	name           = "bw-mcp"
-	title          = "Vault Guardian"
-	version        = "0.1.0"
-	address        = ":8080"
-	path           = "/mcp"
-	defaultDataDir = "/var/lib/bw"
-	instructions   = "Vault Guardian reports metadata for a local Bitwarden vault. Tools return item id, name, folder, and age in days. They do not return passwords."
+	name              = "bw-mcp"
+	title             = "Vault Guardian"
+	version           = "0.1.0"
+	address           = ":8080"
+	path              = "/mcp"
+	defaultDataDir    = "/var/lib/bw"
+	defaultSecretsDir = "/run/secrets"
+	dataDirEnv        = "BW_DATA_DIR"
+	secretsDirEnv     = "BW_SECRETS_DIR"
+	instructions      = "Vault Guardian reports metadata for a local Bitwarden vault. Tools return item id, name, folder, and age in days. They do not return passwords."
 )
 
 // New returns a configured MCP server. logger and store may be nil.
@@ -43,13 +47,10 @@ func New(logger *slog.Logger, store *cache.Cache) *mcp.Server {
 
 // Run serves the server over Streamable HTTP until ctx is cancelled.
 func Run(ctx context.Context) error {
-	secs, err := secrets.Load("")
-	if err != nil {
-		return err
-	}
 	// The data directory is private to this container and must already exist.
-	cli := &bw.CLI{Runner: bw.ExecRunner{}, DataDir: defaultDataDir}
-	store := cache.New(cli, secs, time.Now)
+	dataDir, secretsDir := configuredDirs()
+	cli := &bw.CLI{Runner: bw.ExecRunner{}, DataDir: dataDir}
+	store := cache.New(cli, secrets.NewFileSource(secretsDir), time.Now)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	addr := os.Getenv("MCP_ADDR")
@@ -77,7 +78,7 @@ func Run(ctx context.Context) error {
 
 	select {
 	case err := <-serverErr:
-		if err == http.ErrServerClosed {
+		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return err
@@ -87,9 +88,23 @@ func Run(ctx context.Context) error {
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
 			return err
 		}
-		if err := <-serverErr; err != http.ErrServerClosed {
+		if err := <-serverErr; !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 		return nil
 	}
+}
+
+func configuredDirs() (string, string) {
+	dataDir := os.Getenv(dataDirEnv)
+	if dataDir == "" {
+		dataDir = defaultDataDir
+	}
+
+	secretsDir := os.Getenv(secretsDirEnv)
+	if secretsDir == "" {
+		secretsDir = defaultSecretsDir
+	}
+
+	return dataDir, secretsDir
 }

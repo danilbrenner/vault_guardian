@@ -8,6 +8,7 @@ import (
 	"bw-mcp/internal/bw"
 	"bw-mcp/internal/cache"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -22,23 +23,50 @@ func registerTools(s *mcp.Server, store *cache.Cache) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_items",
 		Description: "List cached vault items. Returns id, name, folder, and age in days. Refreshes once if the cache has never been synced.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, []bw.Item, error) {
+		OutputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"items": map[string]any{
+					"anyOf": []any{
+						map[string]any{"type": "null"},
+						map[string]any{
+							"type": "array",
+							"items": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"id":       map[string]any{"type": "string"},
+									"name":     map[string]any{"type": "string"},
+									"folder":   map[string]any{"anyOf": []any{map[string]any{"type": "null"}, map[string]any{"type": "string"}}},
+									"age_days": map[string]any{"type": "integer"},
+								},
+								"required":             []string{"id", "name", "folder", "age_days"},
+								"additionalProperties": false,
+							},
+						},
+					},
+				},
+			},
+			"required":             []string{"items"},
+			"additionalProperties": false,
+		},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listItemsResult, error) {
 		if store == nil {
-			return nil, nil, errors.New("vault cache is not configured")
+			return nil, listItemsResult{}, errors.New("vault cache is not configured")
 		}
 		items, err := store.ListItems(ctx)
 		if err != nil {
-			return nil, nil, err
+			return nil, listItemsResult{}, err
 		}
 		if items == nil {
 			items = []bw.Item{}
 		}
-		return nil, items, nil
+		return nil, listItemsResult{Items: items}, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "get_item",
-		Description: "Get one cached vault item by id. Does not sync.",
+		Name:         "get_item",
+		Description:  "Get one cached vault item by id. Does not sync.",
+		OutputSchema: itemOutputSchema(),
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in getItemInput) (*mcp.CallToolResult, bw.Item, error) {
 		if store == nil {
 			return nil, bw.Item{}, errors.New("vault cache is not configured")
@@ -71,8 +99,9 @@ func registerTools(s *mcp.Server, store *cache.Cache) {
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "cache_status",
-		Description: "Report cache age and Bitwarden CLI status. Does not sync.",
+		Name:         "cache_status",
+		Description:  "Report cache age and Bitwarden CLI status. Does not sync.",
+		OutputSchema: cacheStatusOutputSchema(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, cacheStatusResult, error) {
 		if store == nil {
 			return nil, cacheStatusResult{}, errors.New("vault cache is not configured")
@@ -102,6 +131,10 @@ type getItemInput struct {
 	ID string `json:"id" jsonschema:"Bitwarden item id"`
 }
 
+type listItemsResult struct {
+	Items []bw.Item `json:"items"`
+}
+
 type syncResult struct {
 	SyncedAt   string `json:"synced_at" jsonschema:"ISO 8601 time of the sync"`
 	ItemsCount int    `json:"items_count" jsonschema:"number of items now in the cache"`
@@ -112,4 +145,36 @@ type cacheStatusResult struct {
 	CacheAgeMinutes int     `json:"cache_age_minutes" jsonschema:"minutes since the last sync"`
 	ItemsInCache    int     `json:"items_in_cache" jsonschema:"number of items in the cache"`
 	BWStatus        string  `json:"bw_status" jsonschema:"Bitwarden CLI status: unauthenticated, locked, or unlocked"`
+}
+
+func itemOutputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[bw.Item](nil)
+	if err != nil {
+		panic(err)
+	}
+
+	folder := schema.Properties["folder"]
+	folder.Type = ""
+	folder.Types = nil
+	folder.AnyOf = []*jsonschema.Schema{
+		{Type: "null"},
+		{Type: "string"},
+	}
+	return schema
+}
+
+func cacheStatusOutputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[cacheStatusResult](nil)
+	if err != nil {
+		panic(err)
+	}
+
+	lastSync := schema.Properties["last_sync"]
+	lastSync.Type = ""
+	lastSync.Types = nil
+	lastSync.AnyOf = []*jsonschema.Schema{
+		{Type: "null"},
+		{Type: "string"},
+	}
+	return schema
 }

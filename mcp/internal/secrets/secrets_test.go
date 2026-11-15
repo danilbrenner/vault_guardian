@@ -7,54 +7,61 @@ import (
 	"testing"
 )
 
-func TestLoad(t *testing.T) {
+func TestFileSourceReadsOnlyRequestedSecret(t *testing.T) {
 	dir := t.TempDir()
 	writeSecret(t, dir, ClientIDFile, "client-id\n")
-	writeSecret(t, dir, ClientSecretFile, "client-secret\r\n")
-	writeSecret(t, dir, MasterPasswordFile, "master-password")
+	source := NewFileSource(dir)
 
-	got, err := Load(dir)
+	got, err := source.LoadClientID()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(got.ClientID, []byte("client-id")) {
-		t.Fatalf("client id = %q", got.ClientID)
+	if !bytes.Equal(got, []byte("client-id")) {
+		t.Fatalf("client id = %q", got)
 	}
-	if !bytes.Equal(got.ClientSecret, []byte("client-secret")) {
-		t.Fatalf("client secret = %q", got.ClientSecret)
+
+	// The other files are absent, but constructing the loader and reading the
+	// client ID did not require them.
+	if _, err := source.LoadClientSecret(); err == nil {
+		t.Fatal("expected missing client secret error")
 	}
-	if !bytes.Equal(got.MasterPassword, []byte("master-password")) {
-		t.Fatalf("master password = %q", got.MasterPassword)
-	}
-	if err := got.Validate(); err != nil {
-		t.Fatal(err)
+	if _, err := source.LoadMasterPassword(); err == nil {
+		t.Fatal("expected missing master password error")
 	}
 }
 
-func TestLoadTrimsOnlyOneNewline(t *testing.T) {
+func TestFileSourceTrimsOnlyOneNewline(t *testing.T) {
 	dir := t.TempDir()
 	writeSecret(t, dir, ClientIDFile, "id\n\n")
 	writeSecret(t, dir, ClientSecretFile, "secret\r\n\r\n")
 	writeSecret(t, dir, MasterPasswordFile, "pass\n")
+	source := NewFileSource(dir)
 
-	got, err := Load(dir)
+	got, err := source.LoadClientID()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(got.ClientID, []byte("id\n")) {
-		t.Fatalf("client id = %q", got.ClientID)
+	if !bytes.Equal(got, []byte("id\n")) {
+		t.Fatalf("client id = %q", got)
 	}
-	if !bytes.Equal(got.ClientSecret, []byte("secret\r\n")) {
-		t.Fatalf("client secret = %q", got.ClientSecret)
+	got, err = source.LoadClientSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, []byte("secret\r\n")) {
+		t.Fatalf("client secret = %q", got)
+	}
+	got, err = source.LoadMasterPassword()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, []byte("pass")) {
+		t.Fatalf("master password = %q", got)
 	}
 }
 
-func TestLoadMissingFile(t *testing.T) {
-	dir := t.TempDir()
-	writeSecret(t, dir, ClientIDFile, "id\n")
-	writeSecret(t, dir, ClientSecretFile, "secret\n")
-
-	_, err := Load(dir)
+func TestFileSourceMissingFile(t *testing.T) {
+	_, err := NewFileSource(t.TempDir()).LoadMasterPassword()
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -63,13 +70,17 @@ func TestLoadMissingFile(t *testing.T) {
 	}
 }
 
-func TestLoadEmptyFile(t *testing.T) {
-	dir := t.TempDir()
-	writeSecret(t, dir, ClientIDFile, "id")
-	writeSecret(t, dir, ClientSecretFile, "\n")
-	writeSecret(t, dir, MasterPasswordFile, "pass")
+func TestFileSourceRequiresDirectory(t *testing.T) {
+	_, err := NewFileSource("").LoadClientID()
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("directory is required")) {
+		t.Fatalf("error = %v, want required directory", err)
+	}
+}
 
-	_, err := Load(dir)
+func TestFileSourceEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	writeSecret(t, dir, ClientSecretFile, "\n")
+	_, err := NewFileSource(dir).LoadClientSecret()
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -78,27 +89,19 @@ func TestLoadEmptyFile(t *testing.T) {
 	}
 }
 
-func TestLoadDoesNotExportEnv(t *testing.T) {
+func TestFileSourceDoesNotExportEnv(t *testing.T) {
 	t.Setenv("BW_CLIENTSECRET", "")
 	t.Setenv("BW_PASSWORD", "")
 	os.Unsetenv("BW_CLIENTSECRET")
 	os.Unsetenv("BW_PASSWORD")
 
 	dir := t.TempDir()
-	writeSecret(t, dir, ClientIDFile, "id")
 	writeSecret(t, dir, ClientSecretFile, "secret")
-	writeSecret(t, dir, MasterPasswordFile, "pass")
-	if _, err := Load(dir); err != nil {
+	if _, err := NewFileSource(dir).LoadClientSecret(); err != nil {
 		t.Fatal(err)
 	}
 	if os.Getenv("BW_CLIENTSECRET") != "" || os.Getenv("BW_PASSWORD") != "" {
-		t.Fatal("Load exported credential environment variables")
-	}
-}
-
-func TestValidate(t *testing.T) {
-	if err := (Secrets{}).Validate(); err == nil {
-		t.Fatal("expected error")
+		t.Fatal("loader exported credential environment variables")
 	}
 }
 

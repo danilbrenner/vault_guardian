@@ -29,14 +29,15 @@ type CLI struct {
 
 	mu      sync.Mutex
 	session []byte
-	userID  string
 }
 
 // Open logs in if needed, then unlocks a locked vault. It is a no-op when the
 // vault is already unlocked. The session token stays on CLI after unlocking.
 // It does not sync or retry. A new unlock invalidates older tokens, so Open
-// fails if the CLI is already open. Close is safe to call if Open fails.
-func (c *CLI) Open(ctx context.Context, secs secrets.Secrets) error {
+// fails if the CLI is already open. Credentials are loaded only for the
+// operations needed and their byte buffers are wiped after use. Close is safe
+// to call if Open fails.
+func (c *CLI) Open(ctx context.Context, source secrets.Source) error {
 	if c == nil {
 		return errors.New("bw: cli is nil")
 	}
@@ -48,15 +49,12 @@ func (c *CLI) Open(ctx context.Context, secs secrets.Secrets) error {
 	if len(c.session) != 0 {
 		return errors.New("bw: already open")
 	}
-	if err := secs.Validate(); err != nil {
-		return err
-	}
 	st, err := c.Status(ctx)
 	if err != nil {
 		return err
 	}
 	if st.Status == StatusUnauthenticated {
-		st, err = c.loginAPIKey(ctx, secs.ClientID, secs.ClientSecret)
+		st, err = c.loginAPIKeyFromSource(ctx, source)
 	}
 	if err != nil {
 		return err
@@ -67,13 +65,51 @@ func (c *CLI) Open(ctx context.Context, secs secrets.Secrets) error {
 	if st.Status != StatusLocked {
 		return fmt.Errorf("bw status: expected authenticated, got %q", st.Status)
 	}
-	key, err := c.unlock(ctx, secs.MasterPassword)
+	key, err := c.unlockFromSource(ctx, source)
 	if err != nil {
 		return err
 	}
 	c.session = key
-	c.userID = st.UserID
 	return nil
+}
+
+func (c *CLI) loginAPIKeyFromSource(ctx context.Context, source secrets.Source) (Status, error) {
+	if source == nil {
+		return Status{}, errors.New("bw: secret source is nil")
+	}
+	clientID, err := source.LoadClientID()
+	if err != nil {
+		return Status{}, err
+	}
+	defer wipe(clientID)
+	if len(clientID) == 0 {
+		return Status{}, errors.New("secrets: client id is empty")
+	}
+	clientSecret, err := source.LoadClientSecret()
+	if err != nil {
+		return Status{}, err
+	}
+	defer wipe(clientSecret)
+	if err := c.loginAPIKeyCommand(ctx, clientID, clientSecret); err != nil {
+		return Status{}, err
+	}
+	wipe(clientID)
+	clientID = nil
+	wipe(clientSecret)
+	clientSecret = nil
+	return c.Status(ctx)
+}
+
+func (c *CLI) unlockFromSource(ctx context.Context, source secrets.Source) ([]byte, error) {
+	if source == nil {
+		return nil, errors.New("bw: secret source is nil")
+	}
+	masterPassword, err := source.LoadMasterPassword()
+	if err != nil {
+		return nil, err
+	}
+	defer wipe(masterPassword)
+	return c.unlock(ctx, masterPassword)
 }
 
 // Close locks the CLI and removes the session token.
@@ -90,7 +126,6 @@ func (c *CLI) Close(ctx context.Context) error {
 	}
 	token := c.session
 	c.session = nil
-	c.userID = ""
 	defer wipe(token)
 	return c.lock(ctx, token)
 }
@@ -108,34 +143,34 @@ func (c *CLI) Sync(ctx context.Context) error {
 	return c.sync(ctx, c.session)
 }
 
-// Read lists folders and items and returns the vault model.
+// Read lists folders and items and returns only their public projection.
 // The CLI must be open. Read does not sync and does not take a session key.
 //
 // Items with no password are skipped. Age is whole days since
 // login.passwordRevisionDate, or creationDate when that is absent.
 // Item revisionDate is not an age source.
 // TOTP, notes, URIs, custom fields, attachments, and password history are not kept.
-// The caller must Zero each Login when it is done with the password.
-func (c *CLI) Read(ctx context.Context, now time.Time) (Vault, error) {
+// Passwords are used only to filter items; they are never included in the result.
+func (c *CLI) Read(ctx context.Context, now time.Time) ([]Item, error) {
 	if c == nil {
-		return Vault{}, errors.New("bw: cli is nil")
+		return nil, errors.New("bw: cli is nil")
 	}
 	if len(c.session) == 0 {
-		return Vault{}, errors.New("bw: not open")
+		return nil, errors.New("bw: not open")
 	}
 	if now.IsZero() {
-		return Vault{}, errors.New("bw: now is zero")
+		return nil, errors.New("bw: now is zero")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return Vault{}, err
+		return nil, err
 	}
-	logins, err := c.readLogins(ctx, c.session, now)
+	items, err := c.readItems(ctx, c.session, now)
 	if err != nil {
-		return Vault{}, err
+		return nil, err
 	}
-	return Vault{UserID: c.userID, Logins: logins}, nil
+	return items, nil
 }
 
 // Status runs bw status with no session in the child environment.
@@ -151,25 +186,36 @@ func (c *CLI) Status(ctx context.Context) (Status, error) {
 // loginAPIKey runs bw login --apikey, then returns the updated status.
 // clientID and clientSecret are sent only as BW_CLIENTID and BW_CLIENTSECRET on that child.
 func (c *CLI) loginAPIKey(ctx context.Context, clientID, clientSecret []byte) (Status, error) {
-	if len(clientID) == 0 || len(clientSecret) == 0 {
-		return Status{}, errors.New("bw login: client id and client secret are required")
-	}
-	env, err := c.baseEnv()
-	if err != nil {
-		return Status{}, err
-	}
-	id, err := envPair("BW_CLIENTID", clientID)
-	if err != nil {
-		return Status{}, err
-	}
-	secret, err := envPair("BW_CLIENTSECRET", clientSecret)
-	if err != nil {
-		return Status{}, err
-	}
-	if _, err := c.run(ctx, []string{"login", "--apikey"}, append(env, id, secret)); err != nil {
+	if err := c.loginAPIKeyCommand(ctx, clientID, clientSecret); err != nil {
 		return Status{}, err
 	}
 	return c.Status(ctx)
+}
+
+func (c *CLI) loginAPIKeyCommand(ctx context.Context, clientID, clientSecret []byte) error {
+	if len(clientID) == 0 || len(clientSecret) == 0 {
+		return errors.New("bw login: client id and client secret are required")
+	}
+	env, err := c.baseEnv()
+	if err != nil {
+		return err
+	}
+	id, err := envPair("BW_CLIENTID", clientID)
+	if err != nil {
+		return err
+	}
+	secret, err := envPair("BW_CLIENTSECRET", clientSecret)
+	if err != nil {
+		id = ""
+		return err
+	}
+	_, runErr := c.run(ctx, []string{"login", "--apikey"}, append(env, id, secret))
+	id = ""
+	secret = ""
+	if runErr != nil {
+		return runErr
+	}
+	return nil
 }
 
 // unlock runs bw unlock --passwordenv BW_PASSWORD --raw.
@@ -187,9 +233,10 @@ func (c *CLI) unlock(ctx context.Context, masterPassword []byte) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	res, err := c.run(ctx, []string{"unlock", "--passwordenv", "BW_PASSWORD", "--raw"}, append(env, pair))
-	if err != nil {
-		return nil, err
+	res, runErr := c.run(ctx, []string{"unlock", "--passwordenv", "BW_PASSWORD", "--raw"}, append(env, pair))
+	pair = ""
+	if runErr != nil {
+		return nil, runErr
 	}
 	key := bytes.TrimSpace(res.Stdout)
 	if len(key) == 0 || bytes.ContainsAny(key, "\r\n \"") || bytes.Contains(key, []byte("BW_SESSION")) {
@@ -292,6 +339,7 @@ func getJSON[T any](c *CLI, ctx context.Context, args []string, env []string) (T
 }
 
 func (c *CLI) run(ctx context.Context, args []string, env []string) (Result, error) {
+	defer clearEnv(env)
 	if c.Runner == nil {
 		return Result{}, errors.New("bw: runner is nil")
 	}
@@ -300,6 +348,12 @@ func (c *CLI) run(ctx context.Context, args []string, env []string) (Result, err
 		return res, fmt.Errorf("bw %s: %w", strings.Join(args, " "), commandErr(res, err))
 	}
 	return res, nil
+}
+
+func clearEnv(env []string) {
+	for i := range env {
+		env[i] = ""
+	}
 }
 
 func commandErr(res Result, err error) error {
@@ -320,15 +374,16 @@ func commandErr(res Result, err error) error {
 }
 
 func wipe(b []byte) {
-	for i := range b {
-		b[i] = 0
+	full := b[:cap(b)]
+	for i := range full {
+		full[i] = 0
 	}
 }
 
 const itemTypeLogin = 1
 
-func (c *CLI) readLogins(ctx context.Context, session []byte, now time.Time) ([]Login, error) {
-	// Folders first, so a folder failure does not have to retain item passwords.
+func (c *CLI) readItems(ctx context.Context, session []byte, now time.Time) ([]Item, error) {
+	// Folders first, so a folder failure does not have to decode item passwords.
 	folders, err := c.listFolders(ctx, session)
 	if err != nil {
 		return nil, err
@@ -339,45 +394,36 @@ func (c *CLI) readLogins(ctx context.Context, session []byte, now time.Time) ([]
 	}
 
 	names := folderNames(folders)
-	out := make([]Login, 0, len(items))
+	out := make([]Item, 0, len(items))
 	for _, it := range items {
-		login, ok, err := decodeItem(it, names, now)
+		item, ok, err := decodeItem(it, names, now)
 		if err != nil {
-			zeroLogins(out)
 			return nil, err
 		}
 		if ok {
-			out = append(out, login)
+			out = append(out, item)
 		}
 	}
 	return out, nil
 }
 
-func decodeItem(it rawItem, names map[string]string, now time.Time) (Login, bool, error) {
-	password := ""
-	username := ""
-	changedRaw := ""
-	if it.Login != nil {
-		password = it.Login.Password
-		username = it.Login.Username
-		if it.Login.PasswordRevisionDate != nil {
-			changedRaw = *it.Login.PasswordRevisionDate
-		}
+func decodeItem(it rawItem, names map[string]string, now time.Time) (Item, bool, error) {
+	if it.Login == nil || it.Login.Password == "" {
+		return Item{}, false, nil
 	}
-	if password == "" {
-		return Login{}, false, nil
+	changedRaw := ""
+	if it.Login.PasswordRevisionDate != nil {
+		changedRaw = *it.Login.PasswordRevisionDate
 	}
 	changed, err := passwordChanged(it.ID, changedRaw, it.CreationDate)
 	if err != nil {
-		return Login{}, false, err
+		return Item{}, false, err
 	}
-	return Login{
-		ID:       it.ID,
-		Name:     it.Name,
-		Username: username,
-		Folder:   lookupFolder(folderID(it.FolderID), names),
-		AgeDays:  ageDays(changed, now),
-		password: clonePassword(password),
+	return Item{
+		ID:      it.ID,
+		Name:    it.Name,
+		Folder:  lookupFolder(folderID(it.FolderID), names),
+		AgeDays: ageDays(changed, now),
 	}, true, nil
 }
 
@@ -436,16 +482,6 @@ func folderID(id *string) string {
 	return *id
 }
 
-func clonePassword(s string) []byte {
-	raw := []byte(s)
-	defer func() {
-		for i := range raw {
-			raw[i] = 0
-		}
-	}()
-	return bytes.Clone(raw)
-}
-
 type folder struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -460,7 +496,6 @@ type rawItem struct {
 	RevisionDate string  `json:"revisionDate"`
 	CreationDate string  `json:"creationDate"`
 	Login        *struct {
-		Username             string  `json:"username"`
 		Password             string  `json:"password"`
 		PasswordRevisionDate *string `json:"passwordRevisionDate"`
 	} `json:"login"`

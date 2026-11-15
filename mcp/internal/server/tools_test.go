@@ -10,7 +10,6 @@ import (
 
 	"bw-mcp/internal/bw"
 	"bw-mcp/internal/cache"
-	"bw-mcp/internal/secrets"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -45,11 +44,7 @@ func TestVaultToolJSONHasNoSecrets(t *testing.T) {
 		folders: []byte(`[{"id":"folder-1","name":"Work"}]`),
 	}
 	cli := &bw.CLI{Runner: runner, DataDir: "/var/lib/bw"}
-	store := cache.New(cli, secrets.Secrets{
-		ClientID:       []byte("client-id"),
-		ClientSecret:   []byte("client-secret"),
-		MasterPassword: []byte("master-password"),
-	}, func() time.Time { return clock })
+	store := cache.New(cli, toolSecrets{}, func() time.Time { return clock })
 	session := connectServer(t, New(slog.New(slog.DiscardHandler), store))
 	ctx := context.Background()
 
@@ -68,8 +63,11 @@ func TestVaultToolJSONHasNoSecrets(t *testing.T) {
 	}
 
 	listRes := callTool(t, session, "list_items", nil)
-	var items []map[string]any
-	unmarshalTool(t, listRes, &items)
+	var listed struct {
+		Items []map[string]any `json:"items"`
+	}
+	unmarshalTool(t, listRes, &listed)
+	items := listed.Items
 	if len(items) != 2 {
 		t.Fatalf("items = %#v", items)
 	}
@@ -142,11 +140,7 @@ func TestVaultToolJSONHasNoSecrets(t *testing.T) {
 func TestListItemsErrorOmitsPassword(t *testing.T) {
 	runner := &toolRunner{folders: []byte("[]"), failItems: true}
 	cli := &bw.CLI{Runner: runner, DataDir: "/var/lib/bw"}
-	store := cache.New(cli, secrets.Secrets{
-		ClientID:       []byte("client-id"),
-		ClientSecret:   []byte("client-secret"),
-		MasterPassword: []byte("master-password"),
-	}, time.Now)
+	store := cache.New(cli, toolSecrets{}, time.Now)
 	session := connectServer(t, New(slog.New(slog.DiscardHandler), store))
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_items"})
 	if err != nil {
@@ -162,6 +156,138 @@ func TestListItemsErrorOmitsPassword(t *testing.T) {
 	if !strings.Contains(text, "locked") {
 		t.Fatalf("error = %s", text)
 	}
+}
+
+func TestListItemsOutputSchemaIsObject(t *testing.T) {
+	session := connectServer(t, New(slog.New(slog.DiscardHandler), nil))
+	tools, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools.Tools {
+		if tool.Name != "list_items" {
+			continue
+		}
+		schema, ok := tool.OutputSchema.(map[string]any)
+		if !ok {
+			t.Fatalf("list_items output schema has type %T", tool.OutputSchema)
+		}
+		if schema["type"] != "object" {
+			t.Fatalf("list_items output schema type = %v, want object", schema["type"])
+		}
+		properties := schema["properties"].(map[string]any)
+		items := properties["items"].(map[string]any)
+		assertNullableSchema(t, items, "list_items.items")
+		arraySchema := items["anyOf"].([]any)[1].(map[string]any)
+		itemSchema := arraySchema["items"].(map[string]any)
+		itemProperties := itemSchema["properties"].(map[string]any)
+		assertNullableSchema(t, itemProperties["folder"].(map[string]any), "list_items.items[].folder")
+		return
+	}
+	t.Fatal("list_items tool not found")
+}
+
+func TestCacheStatusNullableLastSyncSchemaUsesAnyOf(t *testing.T) {
+	session := connectServer(t, New(slog.New(slog.DiscardHandler), nil))
+	tools, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools.Tools {
+		if tool.Name != "cache_status" {
+			continue
+		}
+		schema, ok := tool.OutputSchema.(map[string]any)
+		if !ok {
+			t.Fatalf("cache_status output schema has type %T", tool.OutputSchema)
+		}
+		properties := schema["properties"].(map[string]any)
+		lastSync := properties["last_sync"].(map[string]any)
+		assertNullableSchema(t, lastSync, "cache_status.last_sync")
+		branches := lastSync["anyOf"].([]any)
+		if branches[1].(map[string]any)["type"] != "string" {
+			t.Fatalf("cache_status.last_sync non-null branch = %#v, want string", branches[1])
+		}
+		required, ok := schema["required"].([]any)
+		if !ok {
+			t.Fatalf("cache_status required fields have type %T", schema["required"])
+		}
+		for _, field := range required {
+			if field == "last_sync" {
+				return
+			}
+		}
+		t.Fatal("cache_status.last_sync must remain required and nullable")
+	}
+	t.Fatal("cache_status tool not found")
+}
+
+func TestGetItemNullableFolderSchemaUsesAnyOf(t *testing.T) {
+	session := connectServer(t, New(slog.New(slog.DiscardHandler), nil))
+	tools, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools.Tools {
+		if tool.Name != "get_item" {
+			continue
+		}
+		schema, ok := tool.OutputSchema.(map[string]any)
+		if !ok {
+			t.Fatalf("get_item output schema has type %T", tool.OutputSchema)
+		}
+		properties := schema["properties"].(map[string]any)
+		folder := properties["folder"].(map[string]any)
+		assertNullableSchema(t, folder, "get_item.folder")
+		branches := folder["anyOf"].([]any)
+		if branches[1].(map[string]any)["type"] != "string" {
+			t.Fatalf("get_item.folder non-null branch = %#v, want string", branches[1])
+		}
+		required, ok := schema["required"].([]any)
+		if !ok {
+			t.Fatalf("get_item required fields have type %T", schema["required"])
+		}
+		for _, field := range required {
+			if field == "folder" {
+				return
+			}
+		}
+		t.Fatal("get_item.folder must remain required and nullable")
+	}
+	t.Fatal("get_item tool not found")
+}
+
+func assertNullableSchema(t *testing.T, schema map[string]any, path string) {
+	t.Helper()
+	if _, hasType := schema["type"]; hasType {
+		t.Fatalf("%s should use anyOf branches, got type %v", path, schema["type"])
+	}
+	branches, ok := schema["anyOf"].([]any)
+	if !ok || len(branches) != 2 {
+		t.Fatalf("%s anyOf = %#v, want null and non-null branches", path, schema["anyOf"])
+	}
+	first, ok := branches[0].(map[string]any)
+	if !ok || first["type"] != "null" {
+		t.Fatalf("%s null branch = %#v", path, branches[0])
+	}
+	second, ok := branches[1].(map[string]any)
+	if !ok || second["type"] != "array" && second["type"] != "string" {
+		t.Fatalf("%s non-null branch = %#v", path, branches[1])
+	}
+}
+
+type toolSecrets struct{}
+
+func (toolSecrets) LoadClientID() ([]byte, error) {
+	return []byte("client-id"), nil
+}
+
+func (toolSecrets) LoadClientSecret() ([]byte, error) {
+	return []byte("client-secret"), nil
+}
+
+func (toolSecrets) LoadMasterPassword() ([]byte, error) {
+	return []byte("master-password"), nil
 }
 
 func connectServer(t *testing.T, s *mcp.Server) *mcp.ClientSession {

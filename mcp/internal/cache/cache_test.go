@@ -242,28 +242,6 @@ func TestListItemsRetriesAfterFailure(t *testing.T) {
 	}
 }
 
-func TestZeroLoginsClearsPassword(t *testing.T) {
-	cli := newCLI(newScriptRunner(sampleItems()))
-	if err := cli.Open(context.Background(), testSecrets()); err != nil {
-		t.Fatal(err)
-	}
-	v, err := cli.Read(context.Background(), time.Date(2024, 1, 31, 0, 0, 0, 0, time.UTC))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(v.Logins[0].Password()) != "p@ss-should-not-leak" {
-		t.Fatal("password was not decoded")
-	}
-	held := v.Logins[0].Password()
-	zeroLogins(v.Logins)
-	if len(v.Logins[0].Password()) != 0 || string(held) != strings.Repeat("\x00", len("p@ss-should-not-leak")) {
-		t.Fatal("password was not zeroed")
-	}
-	if err := cli.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestForceSyncOpensAndCloses(t *testing.T) {
 	runner := newScriptRunner(sampleItems())
 	store := New(newCLI(runner), testSecrets(), time.Now)
@@ -305,12 +283,22 @@ func newCLI(runner *scriptRunner) *bw.CLI {
 	return &bw.CLI{Runner: runner, DataDir: "/var/lib/bw"}
 }
 
-func testSecrets() secrets.Secrets {
-	return secrets.Secrets{
-		ClientID:       []byte("client-id"),
-		ClientSecret:   []byte("client-secret"),
-		MasterPassword: []byte("master-password"),
-	}
+func testSecrets() secrets.Source {
+	return testSecretSource{}
+}
+
+type testSecretSource struct{}
+
+func (testSecretSource) LoadClientID() ([]byte, error) {
+	return []byte("client-id"), nil
+}
+
+func (testSecretSource) LoadClientSecret() ([]byte, error) {
+	return []byte("client-secret"), nil
+}
+
+func (testSecretSource) LoadMasterPassword() ([]byte, error) {
+	return []byte("master-password"), nil
 }
 
 func sampleItems() []byte {
