@@ -80,7 +80,7 @@ func TestVaultToolJSONHasNoSecrets(t *testing.T) {
 	for _, item := range items {
 		for k := range item {
 			switch k {
-			case "id", "name", "folder", "age_days":
+			case "id", "name", "masked_username", "folder", "age_days", "length", "entropy", "strength", "hash":
 			default:
 				t.Fatalf("unexpected field %s", k)
 			}
@@ -367,9 +367,6 @@ func assertNoSecrets(t *testing.T, got string) {
 		`"username"`,
 		`"totp"`,
 		`"pwned_count"`,
-		`"entropy"`,
-		`"strength"`,
-		`"hash"`,
 	} {
 		if strings.Contains(got, secret) {
 			t.Fatalf("tool JSON contains %q: %s", secret, got)

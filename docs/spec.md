@@ -69,8 +69,8 @@ Session is never kept open longer than necessary.
 #### `list_logins`
 
 **Parameters:**
-- `filter` (optional): `"all"` | `"weak"` | `"pwned"` | `"old"` | `"duplicate"`
-- `min_age_days` (optional): number
+- `filter` (optional): `"all"` | `"weak"` | `"pwned"` | `"duplicate"`
+- `min_age_days` (optional): number. When set, keep items with `age_days >= min_age_days`. ANDs with `filter`. Omitted means no age constraint. There is no `old` filter and no default.
 
 **Returns:** An object containing an array of login summaries:
 
@@ -86,10 +86,6 @@ Session is never kept open longer than necessary.
       "length": "number",
       "entropy": "number",
       "strength": "VeryWeak | Weak | Moderate | Strong | VeryStrong",
-      "has_digit": "boolean",
-      "has_lower": "boolean",
-      "has_upper": "boolean",
-      "has_symbol": "boolean",
       "pwned_count": "number",
       "hash": "string"
     }

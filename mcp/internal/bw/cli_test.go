@@ -213,14 +213,14 @@ func TestListItemsFiltersLoginAndTrash(t *testing.T) {
 	if items[0].ID != "login-1" || folderID(items[0].FolderID) != "folder-1" || items[0].Login == nil {
 		t.Fatalf("first = %+v", items[0])
 	}
-	if items[0].Login.Password != password || items[0].Login.PasswordRevisionDate == nil || *items[0].Login.PasswordRevisionDate != "2024-01-02T03:04:05.000Z" {
+	if string(items[0].Login.Password) != password || items[0].Login.PasswordRevisionDate == nil || *items[0].Login.PasswordRevisionDate != "2024-01-02T03:04:05.000Z" {
 		t.Fatalf("first password metadata = %+v", items[0].Login)
 	}
 	if items[1].ID != "no-folder" || items[1].FolderID != nil || items[1].Login == nil || items[1].Login.PasswordRevisionDate != nil {
 		t.Fatalf("second = %+v", items[1])
 	}
 	// The raw parse still holds the password. The model CLI returns does not encode it.
-	if items[0].Login.Password == "" {
+	if len(items[0].Login.Password) == 0 {
 		t.Fatal("raw password was dropped before decode")
 	}
 }
@@ -922,7 +922,7 @@ func TestReadProjectsItems(t *testing.T) {
 	for _, item := range decoded {
 		for k := range item {
 			switch k {
-			case "id", "name", "folder", "age_days":
+			case "id", "name", "masked_username", "folder", "age_days", "length", "entropy", "strength", "hash":
 			default:
 				t.Fatalf("unexpected public field %s", k)
 			}
@@ -1166,7 +1166,7 @@ func TestReadCanceledContext(t *testing.T) {
 	}
 }
 
-func readCLI(t *testing.T, items, folders []any, session []byte, now time.Time) []Item {
+func readCLI(t *testing.T, items, folders []any, session []byte, now time.Time) []Login {
 	t.Helper()
 	v, err := readCLIErr(t, items, folders, session, now)
 	if err != nil {
@@ -1175,7 +1175,7 @@ func readCLI(t *testing.T, items, folders []any, session []byte, now time.Time) 
 	return v
 }
 
-func readCLIErr(t *testing.T, items, folders []any, session []byte, now time.Time) ([]Item, error) {
+func readCLIErr(t *testing.T, items, folders []any, session []byte, now time.Time) ([]Login, error) {
 	t.Helper()
 	itemBody, err := json.Marshal(items)
 	if err != nil {
@@ -1223,7 +1223,7 @@ func assertNoSecrets(t *testing.T, got string, secrets []string) {
 	}
 }
 
-func ages(items []Item) []int {
+func ages(items []Login) []int {
 	out := make([]int, len(items))
 	for i := range items {
 		out[i] = items[i].AgeDays

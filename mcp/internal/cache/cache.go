@@ -39,7 +39,7 @@ type Cache struct {
 	refreshMu sync.Mutex
 
 	mu       sync.Mutex
-	items    []bw.Item
+	items    []bw.Login
 	synced   bool
 	lastSync time.Time
 }
@@ -60,7 +60,7 @@ func New(cli *bw.CLI, source secrets.Source, now func() time.Time) *Cache {
 // ListItems returns the cached public items.
 // An empty cache (no successful sync yet) refreshes once.
 // A successful sync that stored zero items does not refresh again.
-func (c *Cache) ListItems(ctx context.Context) ([]bw.Item, error) {
+func (c *Cache) ListItems(ctx context.Context) ([]bw.Login, error) {
 	if items, ok := c.snapshot(); ok {
 		return items, nil
 	}
@@ -75,9 +75,9 @@ func (c *Cache) ListItems(ctx context.Context) ([]bw.Item, error) {
 }
 
 // GetItem returns one cached item. It does not sync.
-func (c *Cache) GetItem(id string) (bw.Item, error) {
+func (c *Cache) GetItem(id string) (bw.Login, error) {
 	if id == "" {
-		return bw.Item{}, errors.New("cache: item id is empty")
+		return bw.Login{}, errors.New("cache: item id is empty")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -86,7 +86,7 @@ func (c *Cache) GetItem(id string) (bw.Item, error) {
 			return it, nil
 		}
 	}
-	return bw.Item{}, fmt.Errorf("%w: %s", ErrNotFound, id)
+	return bw.Login{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 }
 
 // ForceSync opens the CLI, syncs, reads public items, and replaces the cache.
@@ -136,7 +136,7 @@ func (c *Cache) Status(ctx context.Context) (Status, error) {
 // withItems opens, syncs, reads public items, and closes.
 // The whole operation is retried once. A new Open invalidates older session tokens,
 // so a token is never reused across attempts. After success the CLI is locked.
-func (c *Cache) withItems(ctx context.Context) ([]bw.Item, error) {
+func (c *Cache) withItems(ctx context.Context) ([]bw.Login, error) {
 	items, err := c.once(ctx)
 	if err == nil || ctx.Err() != nil {
 		return items, err
@@ -144,7 +144,7 @@ func (c *Cache) withItems(ctx context.Context) ([]bw.Item, error) {
 	return c.once(ctx)
 }
 
-func (c *Cache) once(ctx context.Context) (items []bw.Item, err error) {
+func (c *Cache) once(ctx context.Context) (items []bw.Login, err error) {
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -166,13 +166,13 @@ func (c *Cache) once(ctx context.Context) (items []bw.Item, err error) {
 	return items, nil
 }
 
-func (c *Cache) snapshot() ([]bw.Item, bool) {
+func (c *Cache) snapshot() ([]bw.Login, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.synced {
 		return nil, false
 	}
-	return append([]bw.Item{}, c.items...), true
+	return append([]bw.Login{}, c.items...), true
 }
 
 func ageMinutes(last, now time.Time) int {

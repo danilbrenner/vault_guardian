@@ -367,9 +367,6 @@ func assertNoSecrets(t *testing.T, got string) {
 		`"username"`,
 		`"totp"`,
 		`"pwned_count"`,
-		`"entropy"`,
-		`"strength"`,
-		`"hash"`,
 	} {
 		if strings.Contains(got, secret) {
 			t.Fatalf("output contains %q: %s", secret, got)

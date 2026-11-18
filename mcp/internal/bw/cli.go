@@ -148,10 +148,10 @@ func (c *CLI) Sync(ctx context.Context) error {
 //
 // Items with no password are skipped. Age is whole days since
 // login.passwordRevisionDate, or creationDate when that is absent.
-// Item revisionDate is not an age source.
+// Login revisionDate is not an age source.
 // TOTP, notes, URIs, custom fields, attachments, and password history are not kept.
 // Passwords are used only to filter items; they are never included in the result.
-func (c *CLI) Read(ctx context.Context, now time.Time) ([]Item, error) {
+func (c *CLI) Read(ctx context.Context, now time.Time) ([]Login, error) {
 	if c == nil {
 		return nil, errors.New("bw: cli is nil")
 	}
@@ -382,7 +382,7 @@ func wipe(b []byte) {
 
 const itemTypeLogin = 1
 
-func (c *CLI) readItems(ctx context.Context, session []byte, now time.Time) ([]Item, error) {
+func (c *CLI) readItems(ctx context.Context, session []byte, now time.Time) ([]Login, error) {
 	// Folders first, so a folder failure does not have to decode item passwords.
 	folders, err := c.listFolders(ctx, session)
 	if err != nil {
@@ -394,9 +394,9 @@ func (c *CLI) readItems(ctx context.Context, session []byte, now time.Time) ([]I
 	}
 
 	names := folderNames(folders)
-	out := make([]Item, 0, len(items))
+	out := make([]Login, 0, len(items))
 	for _, it := range items {
-		item, ok, err := decodeItem(it, names, now)
+		item, ok, err := decodeLogin(it, names, now)
 		if err != nil {
 			return nil, err
 		}
@@ -407,9 +407,9 @@ func (c *CLI) readItems(ctx context.Context, session []byte, now time.Time) ([]I
 	return out, nil
 }
 
-func decodeItem(it rawItem, names map[string]string, now time.Time) (Item, bool, error) {
-	if it.Login == nil || it.Login.Password == "" {
-		return Item{}, false, nil
+func decodeLogin(it rawItem, names map[string]string, now time.Time) (Login, bool, error) {
+	if it.Login == nil || len(it.Login.Password) == 0 {
+		return Login{}, false, nil
 	}
 	changedRaw := ""
 	if it.Login.PasswordRevisionDate != nil {
@@ -417,9 +417,9 @@ func decodeItem(it rawItem, names map[string]string, now time.Time) (Item, bool,
 	}
 	changed, err := passwordChanged(it.ID, changedRaw, it.CreationDate)
 	if err != nil {
-		return Item{}, false, err
+		return Login{}, false, err
 	}
-	return Item{
+	return Login{
 		ID:      it.ID,
 		Name:    it.Name,
 		Folder:  lookupFolder(folderID(it.FolderID), names),
@@ -488,15 +488,43 @@ type folder struct {
 }
 
 type rawItem struct {
-	ID           string  `json:"id"`
-	Name         string  `json:"name"`
-	FolderID     *string `json:"folderId"`
-	Type         int     `json:"type"`
-	DeletedDate  *string `json:"deletedDate"`
-	RevisionDate string  `json:"revisionDate"`
-	CreationDate string  `json:"creationDate"`
-	Login        *struct {
-		Password             string  `json:"password"`
-		PasswordRevisionDate *string `json:"passwordRevisionDate"`
-	} `json:"login"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	FolderID     *string   `json:"folderId"`
+	Type         int       `json:"type"`
+	DeletedDate  *string   `json:"deletedDate"`
+	RevisionDate string    `json:"revisionDate"`
+	CreationDate string    `json:"creationDate"`
+	Login        *rawLogin `json:"login"`
+}
+
+type rawLogin struct {
+	Username             string
+	Password             []byte
+	PasswordRevisionDate *string
+}
+
+// UnmarshalJSON keeps the Bitwarden password as its original UTF-8 bytes.
+// encoding/json otherwise treats []byte JSON strings as base64.
+func (l *rawLogin) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Username             string          `json:"username"`
+		Password             json.RawMessage `json:"password"`
+		PasswordRevisionDate *string         `json:"passwordRevisionDate"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	l.Username = raw.Username
+	l.PasswordRevisionDate = raw.PasswordRevisionDate
+	if len(raw.Password) == 0 || bytes.Equal(raw.Password, []byte("null")) {
+		l.Password = nil
+		return nil
+	}
+	var password string
+	if err := json.Unmarshal(raw.Password, &password); err != nil {
+		return err
+	}
+	l.Password = []byte(password)
+	return nil
 }

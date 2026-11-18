@@ -2,6 +2,8 @@ package bw
 
 import (
 	"encoding/json"
+
+	"bw-mcp/internal/metrics"
 )
 
 const (
@@ -46,12 +48,17 @@ func (s *Status) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Item is a login projection that is safe to leave the CLI layer.
-// It has no password, username, TOTP, notes, URIs, custom fields,
-// attachments, or password history. Metric fields are filled later.
-type Item struct {
-	ID      string  `json:"id"`
-	Name    string  `json:"name"`
-	Folder  *string `json:"folder"`
-	AgeDays int     `json:"age_days"`
+// Login is a login projection that is safe to leave the CLI layer.
+// It has no password, raw username, TOTP, notes, URIs, custom fields,
+// attachments, or password history.
+type Login struct {
+	ID             string                `json:"id"`
+	Name           string                `json:"name"`
+	MaskedUsername string                `json:"masked_username"`
+	Folder         *string               `json:"folder"`
+	AgeDays        int                   `json:"age_days"`
+	Length         int                   `json:"length"`
+	Entropy        float64               `json:"entropy"`
+	Strength       metrics.StrengthLevel `json:"strength"`
+	Hash           string                `json:"hash"`
 }

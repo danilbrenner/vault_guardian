@@ -11,7 +11,7 @@ import (
 	"bw-mcp/internal/bw"
 )
 
-func TestItemToolSchemasTrackPublicModel(t *testing.T) {
+func TestLoginToolSchemasTrackPublicModel(t *testing.T) {
 	session := connectServer(t, New(slog.New(slog.DiscardHandler), nil))
 	listedTools, err := session.ListTools(context.Background(), nil)
 	if err != nil {
@@ -23,19 +23,19 @@ func TestItemToolSchemasTrackPublicModel(t *testing.T) {
 		toolSchemas[tool.Name] = tool.OutputSchema
 	}
 
-	want := publicItemJSONFields()
+	want := publicLoginJSONFields()
 	listFields := listItemSchemaFields(t, toolSchemas["list_items"])
 	getFields := objectSchemaFields(t, toolSchemas["get_item"])
 	if !slices.Equal(listFields, want) {
-		t.Errorf("list_items fields = %v, want public Item fields %v", listFields, want)
+		t.Errorf("list_items fields = %v, want public Login fields %v", listFields, want)
 	}
 	if !slices.Equal(getFields, want) {
-		t.Errorf("get_item fields = %v, want public Item fields %v", getFields, want)
+		t.Errorf("get_item fields = %v, want public Login fields %v", getFields, want)
 	}
 }
 
-func publicItemJSONFields() []string {
-	typ := reflect.TypeOf(bw.Item{})
+func publicLoginJSONFields() []string {
+	typ := reflect.TypeOf(bw.Login{})
 	fields := make([]string, 0, typ.NumField())
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)

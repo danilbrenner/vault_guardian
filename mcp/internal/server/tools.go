@@ -22,7 +22,7 @@ func registerTools(s *mcp.Server, store *cache.Cache) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_items",
-		Description: "List cached vault items. Returns id, name, folder, and age in days. Refreshes once if the cache has never been synced.",
+		Description: "List cached vault items and password metrics. Refreshes once if the cache has never been synced.",
 		OutputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -34,12 +34,17 @@ func registerTools(s *mcp.Server, store *cache.Cache) {
 							"items": map[string]any{
 								"type": "object",
 								"properties": map[string]any{
-									"id":       map[string]any{"type": "string"},
-									"name":     map[string]any{"type": "string"},
-									"folder":   map[string]any{"anyOf": []any{map[string]any{"type": "null"}, map[string]any{"type": "string"}}},
-									"age_days": map[string]any{"type": "integer"},
+									"id":              map[string]any{"type": "string"},
+									"name":            map[string]any{"type": "string"},
+									"masked_username": map[string]any{"type": "string"},
+									"folder":          map[string]any{"anyOf": []any{map[string]any{"type": "null"}, map[string]any{"type": "string"}}},
+									"age_days":        map[string]any{"type": "integer"},
+									"length":          map[string]any{"type": "integer"},
+									"entropy":         map[string]any{"type": "number"},
+									"strength":        map[string]any{"type": "string"},
+									"hash":            map[string]any{"type": "string"},
 								},
-								"required":             []string{"id", "name", "folder", "age_days"},
+								"required":             []string{"id", "name", "masked_username", "folder", "age_days", "length", "entropy", "strength", "hash"},
 								"additionalProperties": false,
 							},
 						},
@@ -58,7 +63,7 @@ func registerTools(s *mcp.Server, store *cache.Cache) {
 			return nil, listItemsResult{}, err
 		}
 		if items == nil {
-			items = []bw.Item{}
+			items = []bw.Login{}
 		}
 		return nil, listItemsResult{Items: items}, nil
 	})
@@ -67,16 +72,16 @@ func registerTools(s *mcp.Server, store *cache.Cache) {
 		Name:         "get_item",
 		Description:  "Get one cached vault item by id. Does not sync.",
 		OutputSchema: itemOutputSchema(),
-	}, func(_ context.Context, _ *mcp.CallToolRequest, in getItemInput) (*mcp.CallToolResult, bw.Item, error) {
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in getItemInput) (*mcp.CallToolResult, bw.Login, error) {
 		if store == nil {
-			return nil, bw.Item{}, errors.New("vault cache is not configured")
+			return nil, bw.Login{}, errors.New("vault cache is not configured")
 		}
 		if in.ID == "" {
-			return nil, bw.Item{}, errors.New("item id is required")
+			return nil, bw.Login{}, errors.New("item id is required")
 		}
 		item, err := store.GetItem(in.ID)
 		if err != nil {
-			return nil, bw.Item{}, err
+			return nil, bw.Login{}, err
 		}
 		return nil, item, nil
 	})
@@ -132,7 +137,7 @@ type getItemInput struct {
 }
 
 type listItemsResult struct {
-	Items []bw.Item `json:"items"`
+	Items []bw.Login `json:"items"`
 }
 
 type syncResult struct {
@@ -148,7 +153,7 @@ type cacheStatusResult struct {
 }
 
 func itemOutputSchema() *jsonschema.Schema {
-	schema, err := jsonschema.For[bw.Item](nil)
+	schema, err := jsonschema.For[bw.Login](nil)
 	if err != nil {
 		panic(err)
 	}
