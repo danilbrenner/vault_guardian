@@ -3,10 +3,12 @@ package server
 import (
 	"context"
 	"errors"
+	"sort"
 	"time"
 
 	"bw-mcp/internal/bw"
 	"bw-mcp/internal/cache"
+	"bw-mcp/internal/metrics"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -65,7 +67,7 @@ func registerTools(s *mcp.Server, store *cache.Cache) {
 			"required":             []string{"items"},
 			"additionalProperties": false,
 		},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ listItemsInput) (*mcp.CallToolResult, listItemsResult, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in listItemsInput) (*mcp.CallToolResult, listItemsResult, error) {
 		if store == nil {
 			return nil, listItemsResult{}, errors.New("vault cache is not configured")
 		}
@@ -76,6 +78,7 @@ func registerTools(s *mcp.Server, store *cache.Cache) {
 		if items == nil {
 			items = []bw.Login{}
 		}
+		items = filterLogins(items, in)
 		return nil, listItemsResult{Items: items}, nil
 	})
 
@@ -108,11 +111,15 @@ func registerTools(s *mcp.Server, store *cache.Cache) {
 			"additionalProperties": false,
 		},
 		OutputSchema: duplicatesOutputSchema(),
-	}, func(_ context.Context, _ *mcp.CallToolRequest, _ getDuplicatesInput) (*mcp.CallToolResult, getDuplicatesResult, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in getDuplicatesInput) (*mcp.CallToolResult, getDuplicatesResult, error) {
 		if store == nil {
 			return nil, getDuplicatesResult{}, errors.New("vault cache is not configured")
 		}
-		return nil, getDuplicatesResult{}, nil
+		items, err := store.ListItems(ctx)
+		if err != nil {
+			return nil, getDuplicatesResult{}, err
+		}
+		return nil, findDuplicateGroups(items, in.MinCount), nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -203,6 +210,73 @@ type cacheStatusResult struct {
 	CacheAgeMinutes int     `json:"cache_age_minutes" jsonschema:"minutes since the last sync"`
 	ItemsInCache    int     `json:"items_in_cache" jsonschema:"number of items in the cache"`
 	BWStatus        string  `json:"bw_status" jsonschema:"Bitwarden CLI status: unauthenticated, locked, or unlocked"`
+}
+
+func filterLogins(items []bw.Login, in listItemsInput) []bw.Login {
+	duplicateCounts := make(map[string]int)
+	if in.Filter == "duplicate" {
+		for _, login := range items {
+			duplicateCounts[login.Hash]++
+		}
+	}
+
+	out := make([]bw.Login, 0, len(items))
+	for _, login := range items {
+		if in.MinAgeDays != nil && login.AgeDays < *in.MinAgeDays {
+			continue
+		}
+		switch in.Filter {
+		case "", "all":
+		case "weak":
+			if login.Strength != metrics.StrengthVeryWeak && login.Strength != metrics.StrengthWeak {
+				continue
+			}
+		case "duplicate":
+			if duplicateCounts[login.Hash] < 2 {
+				continue
+			}
+		default:
+			continue
+		}
+		out = append(out, login)
+	}
+	return out
+}
+
+func findDuplicateGroups(items []bw.Login, minCount *int) getDuplicatesResult {
+	threshold := 2
+	if minCount != nil {
+		threshold = *minCount
+	}
+
+	byHash := make(map[string][]duplicateLogin)
+	for _, login := range items {
+		byHash[login.Hash] = append(byHash[login.Hash], duplicateLogin{
+			ID:             login.ID,
+			Name:           login.Name,
+			MaskedUsername: login.MaskedUsername,
+			Folder:         login.Folder,
+		})
+	}
+
+	hashes := make([]string, 0, len(byHash))
+	for hash, members := range byHash {
+		if len(members) >= threshold {
+			hashes = append(hashes, hash)
+		}
+	}
+	sort.Strings(hashes)
+
+	groups := make(getDuplicatesResult, 0, len(hashes))
+	for _, hash := range hashes {
+		members := byHash[hash]
+		groups = append(groups, duplicateGroup{
+			Hash:   hash,
+			Count:  len(members),
+			Logins: members,
+		})
+	}
+	return groups
 }
 
 func itemOutputSchema() *jsonschema.Schema {
