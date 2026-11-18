@@ -3,6 +3,9 @@ package bw
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1036,6 +1039,8 @@ func TestReadStopsOnDateError(t *testing.T) {
 
 func TestOpenSyncReadClose(t *testing.T) {
 	now := mustTime(t, "2024-01-31T00:00:00Z")
+	const password = "aA1!bcDE"
+	const username = "danil@gmail.com"
 	items, err := json.Marshal([]any{map[string]any{
 		"id":           "github",
 		"name":         "GitHub",
@@ -1044,8 +1049,8 @@ func TestOpenSyncReadClose(t *testing.T) {
 		"creationDate": "2020-01-01T00:00:00Z",
 		"revisionDate": "2024-01-30T00:00:00Z",
 		"login": map[string]any{
-			"username":             "d@example.com",
-			"password":             "inside-secret",
+			"username":             username,
+			"password":             password,
 			"passwordRevisionDate": "2024-01-01T00:00:00Z",
 		},
 	}})
@@ -1077,8 +1082,18 @@ func TestOpenSyncReadClose(t *testing.T) {
 	if len(got) != 1 || got[0].AgeDays != 30 || got[0].Folder == nil || *got[0].Folder != "Work" {
 		t.Fatalf("items = %#v", got)
 	}
-	if strings.Contains(string(mustJSON(t, got)), "inside-secret") {
-		t.Fatal("password left the CLI read layer")
+	hash := sha256.Sum256([]byte(password + "user-1"))
+	if got[0].MaskedUsername != "d***l@gmail.com" || got[0].Length != len(password) || got[0].Entropy != 24 || string(got[0].Strength) != "Weak" || got[0].Hash != hex.EncodeToString(hash[:]) {
+		t.Errorf("login metrics = %+v", got[0])
+	}
+	sha1Hash := sha1.Sum([]byte(password))
+	publicJSON := string(mustJSON(t, got))
+	assertNoSecrets(t, publicJSON, []string{
+		password, username, hex.EncodeToString(sha1Hash[:]),
+		`"password"`, `"username"`, `"sha1"`,
+	})
+	if strings.Contains(publicJSON, "inside-secret") {
+		t.Fatal("old test password unexpectedly remains in the projection")
 	}
 	wantCalls := []string{"status", "unlock --passwordenv BW_PASSWORD --raw", "sync", "list folders", "list items", "lock"}
 	if strings.Join(runner.calls, ",") != strings.Join(wantCalls, ",") {

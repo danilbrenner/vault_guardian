@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"strings"
@@ -15,6 +18,8 @@ import (
 
 func TestVaultToolJSONHasNoSecrets(t *testing.T) {
 	now := time.Date(2024, 1, 31, 0, 0, 0, 0, time.UTC)
+	const password = "aA1!bcDE"
+	const username = "danil@gmail.com"
 	clock := now
 	runner := &toolRunner{
 		items: []byte(`[
@@ -27,8 +32,8 @@ func TestVaultToolJSONHasNoSecrets(t *testing.T) {
 				"attachments":[{"fileName":"attach-secret"}],
 				"passwordHistory":[{"password":"history-secret"}],
 				"login":{
-					"username":"danil.secret@example.com",
-					"password":"p@ss-should-not-leak",
+					"username":"` + username + `",
+					"password":"` + password + `",
 					"totp":"totp-should-not-leak",
 					"passwordRevisionDate":"2024-01-01T00:00:00.000Z",
 					"uris":[{"uri":"https://secret.example/uri-secret"}]
@@ -74,6 +79,8 @@ func TestVaultToolJSONHasNoSecrets(t *testing.T) {
 	if items[0]["id"] != "github" || items[0]["name"] != "GitHub" || items[0]["folder"] != "Work" || items[0]["age_days"] != float64(30) {
 		t.Fatalf("github = %#v", items[0])
 	}
+	wantHash := sha256.Sum256([]byte(password + "user-1"))
+	assertLoginMetrics(t, items[0], "d***l@gmail.com", hex.EncodeToString(wantHash[:]))
 	if items[1]["folder"] != nil || items[1]["age_days"] != float64(61) {
 		t.Fatalf("legacy = %#v", items[1])
 	}
@@ -87,6 +94,7 @@ func TestVaultToolJSONHasNoSecrets(t *testing.T) {
 		}
 	}
 	assertNoSecrets(t, toolText(t, listRes))
+	assertNoSHA1(t, toolText(t, listRes), password)
 	syncs := strings.Count(strings.Join(runner.calls, ","), "sync")
 	callTool(t, session, "list_items", nil)
 	if strings.Count(strings.Join(runner.calls, ","), "sync") != syncs {
@@ -99,7 +107,9 @@ func TestVaultToolJSONHasNoSecrets(t *testing.T) {
 	if item["id"] != "github" || item["folder"] != "Work" {
 		t.Fatalf("get = %#v", item)
 	}
+	assertLoginMetrics(t, item, "d***l@gmail.com", hex.EncodeToString(wantHash[:]))
 	assertNoSecrets(t, toolText(t, got))
+	assertNoSHA1(t, toolText(t, got), password)
 
 	missing, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "get_item",
@@ -350,8 +360,8 @@ func toolText(t *testing.T, res *mcp.CallToolResult) string {
 func assertNoSecrets(t *testing.T, got string) {
 	t.Helper()
 	for _, secret := range []string{
-		"p@ss-should-not-leak",
-		"danil.secret@example.com",
+		"aA1!bcDE",
+		"danil@gmail.com",
 		"totp-should-not-leak",
 		"note-secret",
 		"field-secret",
@@ -371,6 +381,30 @@ func assertNoSecrets(t *testing.T, got string) {
 		if strings.Contains(got, secret) {
 			t.Fatalf("tool JSON contains %q: %s", secret, got)
 		}
+	}
+}
+
+func assertLoginMetrics(t *testing.T, item map[string]any, username, hash string) {
+	t.Helper()
+	want := map[string]any{
+		"masked_username": username,
+		"length":          float64(8),
+		"entropy":         float64(24),
+		"strength":        "Weak",
+		"hash":            hash,
+	}
+	for field, value := range want {
+		if item[field] != value {
+			t.Errorf("item[%q] = %#v, want %#v", field, item[field], value)
+		}
+	}
+}
+
+func assertNoSHA1(t *testing.T, got, password string) {
+	t.Helper()
+	digest := sha1.Sum([]byte(password))
+	if fullSHA1 := hex.EncodeToString(digest[:]); strings.Contains(got, fullSHA1) {
+		t.Errorf("tool JSON contains full SHA-1 %q", fullSHA1)
 	}
 }
 
