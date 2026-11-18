@@ -37,7 +37,7 @@ func TestServerRespondsToPing(t *testing.T) {
 		names[i] = tool.Name
 	}
 	slices.Sort(names)
-	if strings.Join(names, ",") != "cache_status,force_sync,get_item,list_items,ping" {
+	if strings.Join(names, ",") != "cache_status,force_sync,get_duplicates,get_item,list_items,ping" {
 		t.Fatalf("tools = %#v", names)
 	}
 	if init := session.InitializeResult(); init == nil || strings.Contains(init.Instructions, "No vault tools") {

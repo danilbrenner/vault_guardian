@@ -23,6 +23,17 @@ func registerTools(s *mcp.Server, store *cache.Cache) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_items",
 		Description: "List cached vault items and password metrics. Refreshes once if the cache has never been synced.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"filter": map[string]any{
+					"type": "string",
+					"enum": []string{"all", "weak", "duplicate"},
+				},
+				"min_age_days": map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		},
 		OutputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -54,7 +65,7 @@ func registerTools(s *mcp.Server, store *cache.Cache) {
 			"required":             []string{"items"},
 			"additionalProperties": false,
 		},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listItemsResult, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ listItemsInput) (*mcp.CallToolResult, listItemsResult, error) {
 		if store == nil {
 			return nil, listItemsResult{}, errors.New("vault cache is not configured")
 		}
@@ -84,6 +95,24 @@ func registerTools(s *mcp.Server, store *cache.Cache) {
 			return nil, bw.Login{}, err
 		}
 		return nil, item, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "get_duplicates",
+		Description: "List groups of logins with duplicate passwords.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"min_count": map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		},
+		OutputSchema: duplicatesOutputSchema(),
+	}, func(_ context.Context, _ *mcp.CallToolRequest, _ getDuplicatesInput) (*mcp.CallToolResult, getDuplicatesResult, error) {
+		if store == nil {
+			return nil, getDuplicatesResult{}, errors.New("vault cache is not configured")
+		}
+		return nil, getDuplicatesResult{}, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -136,8 +165,32 @@ type getItemInput struct {
 	ID string `json:"id" jsonschema:"Bitwarden item id"`
 }
 
+type listItemsInput struct {
+	Filter     string `json:"filter,omitempty"`
+	MinAgeDays *int   `json:"min_age_days,omitempty"`
+}
+
+type getDuplicatesInput struct {
+	MinCount *int `json:"min_count,omitempty"`
+}
+
 type listItemsResult struct {
 	Items []bw.Login `json:"items"`
+}
+
+type getDuplicatesResult []duplicateGroup
+
+type duplicateGroup struct {
+	Hash   string           `json:"hash"`
+	Count  int              `json:"count"`
+	Logins []duplicateLogin `json:"logins"`
+}
+
+type duplicateLogin struct {
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	MaskedUsername string  `json:"masked_username"`
+	Folder         *string `json:"folder"`
 }
 
 type syncResult struct {
@@ -166,6 +219,35 @@ func itemOutputSchema() *jsonschema.Schema {
 		{Type: "string"},
 	}
 	return schema
+}
+
+func duplicatesOutputSchema() map[string]any {
+	return map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"hash":  map[string]any{"type": "string"},
+				"count": map[string]any{"type": "integer"},
+				"logins": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"id":              map[string]any{"type": "string"},
+							"name":            map[string]any{"type": "string"},
+							"masked_username": map[string]any{"type": "string"},
+							"folder":          map[string]any{"anyOf": []any{map[string]any{"type": "null"}, map[string]any{"type": "string"}}},
+						},
+						"required":             []string{"id", "name", "masked_username", "folder"},
+						"additionalProperties": false,
+					},
+				},
+			},
+			"required":             []string{"hash", "count", "logins"},
+			"additionalProperties": false,
+		},
+	}
 }
 
 func cacheStatusOutputSchema() *jsonschema.Schema {
