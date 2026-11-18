@@ -23,7 +23,7 @@ Agent (Node.js) — long-running process
         ↓ HTTP (internal docker network only)
 MCP Server (Go) — metrics + cache
         ↓
-Bitwarden CLI + HIBP range API
+Bitwarden CLI
 ```
 
 - **Two containers** on the same host (Raspberry Pi or similar).
@@ -69,7 +69,7 @@ Session is never kept open longer than necessary.
 #### `list_logins`
 
 **Parameters:**
-- `filter` (optional): `"all"` | `"weak"` | `"pwned"` | `"duplicate"`
+- `filter` (optional): `"all"` | `"weak"` | `"duplicate"`
 - `min_age_days` (optional): number. When set, keep items with `age_days >= min_age_days`. ANDs with `filter`. Omitted means no age constraint. There is no `old` filter and no default.
 
 **Returns:** An object containing an array of login summaries:
@@ -86,7 +86,6 @@ Session is never kept open longer than necessary.
       "length": "number",
       "entropy": "number",
       "strength": "VeryWeak | Weak | Moderate | Strong | VeryStrong",
-      "pwned_count": "number",
       "hash": "string"
     }
   ]
@@ -243,19 +242,12 @@ or
 Total items: 247
 Critical: 8
 
-⚠️ Problems in critical (2):
+⚠️ Problems in critical (1):
 
 1. GitHub (d***l@gmail.com)
    • Strength: Weak
    • Age: 640 days
-   • Pwned: no
    • Recommendation: change
-
-2. AWS Root (a***n@company.com)
-   • Strength: Moderate
-   • Age: 210 days
-   • Pwned: 2
-   • Recommendation: change immediately
 ```
 
 - Only critical items with problems are listed.
@@ -267,7 +259,16 @@ Critical: 8
 - Daily: lightweight check (can be silent if no new critical problems)
 - Weekly: full `/report` pushed to Telegram
 
-## 5. Out of Scope for v1
+## 5. Future
+
+Breach checks against the HIBP range API are not part of v1.
+
+- Send the password prefix to `https://api.pwnedpasswords.com/range/{prefix}` with `Add-Padding: true`.
+- `pwned_count` is the matching count, or `0`. Never store or return the SHA-1.
+- `list_logins` gains a `pwned` filter (`pwned_count > 0`).
+- A pwned critical item is `change immediately`. Weak remains `change`.
+
+## 6. Out of Scope for v1
 
 - Generating new passwords
 - Writing anything back to Bitwarden
@@ -277,14 +278,14 @@ Critical: 8
 - Web UI
 - Exposing any port to the host
 
-## 6. Deployment Notes
+## 7. Deployment Notes
 
 - Two containers, internal Docker network only
 - Bitwarden API key + master password supplied to the MCP container via Docker secrets
 - Agent container has no secrets and no filesystem access to the MCP container
 - Exact orchestration tool (Docker Compose, Ansible, Terraform, etc.) is left open
 
-## 7. Open Implementation Details
+## 8. Open Implementation Details
 
 - Exact HTTP routes / OpenAPI shape of the MCP
 - Choice of persistence for agent memory (SQLite vs JSON)

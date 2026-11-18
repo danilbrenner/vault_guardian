@@ -442,7 +442,6 @@ func decodeLogin(it rawItem, names map[string]string, now time.Time, userID stri
 	entropy := metrics.Entropy(password)
 	maskedUsername := metrics.MaskUsername(it.Login.Username)
 	hash := metrics.DuplicateHash(password, userID)
-	metrics.HIBPPrefix(password)
 	return Login{
 		ID:             it.ID,
 		Name:           it.Name,

@@ -180,6 +180,7 @@ func DuplicateHash(password []byte, userID string) string {
 }
 
 // HIBPPrefix returns the HIBP range prefix and clears password before returning.
+// It is not part of the v1 read path. The range client is a later phase.
 func HIBPPrefix(password []byte) string {
 	defer wipe(password)
 	digest := sha1.Sum(password)
