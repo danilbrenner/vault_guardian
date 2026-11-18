@@ -381,6 +381,8 @@ type scriptRunner struct {
 	userID   string
 	failLock bool
 	calls    []string
+	// holdSync, when set, blocks bw sync until the channel is closed.
+	holdSync <-chan struct{}
 }
 
 func newScriptRunner(items []byte) *scriptRunner {
@@ -395,6 +397,13 @@ func newScriptRunner(items []byte) *scriptRunner {
 func (s *scriptRunner) Run(ctx context.Context, args []string, env []string) (bw.Result, error) {
 	cmd := strings.Join(args, " ")
 	s.calls = append(s.calls, cmd)
+	if cmd == "sync" && s.holdSync != nil {
+		select {
+		case <-s.holdSync:
+		case <-ctx.Done():
+			return bw.Result{}, ctx.Err()
+		}
+	}
 	if strings.Contains(cmd, "master-password") || strings.Contains(cmd, "sess-from-unlock") || strings.Contains(cmd, "client-secret") {
 		return bw.Result{ExitCode: 1, Stderr: []byte("secret in argv")}, &bw.ExitError{ExitCode: 1}
 	}

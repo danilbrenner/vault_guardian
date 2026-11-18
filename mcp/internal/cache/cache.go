@@ -41,6 +41,10 @@ type Cache struct {
 	// shareRefresh does not use it yet.
 	flight singleflight.Group
 
+	// entered, when set, runs as a caller enters ForceSync.
+	// Tests use it to line up concurrent refreshes. Production leaves it nil.
+	entered func()
+
 	// refreshMu keeps two bw sessions from interleaving.
 	// It does not collapse concurrent callers into one sync.
 	refreshMu sync.Mutex
@@ -100,6 +104,9 @@ func (c *Cache) GetItem(id string) (bw.Login, error) {
 func (c *Cache) ForceSync(ctx context.Context) (time.Time, int, error) {
 	if c == nil || c.cli == nil {
 		return time.Time{}, 0, errors.New("cache: cli is nil")
+	}
+	if c.entered != nil {
+		c.entered()
 	}
 	res, err := c.shareRefresh(ctx, c.sync)
 	if err != nil {
