@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"bw-mcp/internal/metrics"
 	"bw-mcp/internal/secrets"
 )
 
@@ -29,6 +30,7 @@ type CLI struct {
 
 	mu      sync.Mutex
 	session []byte
+	userID  string
 }
 
 // Open logs in if needed, then unlocks a locked vault. It is a no-op when the
@@ -60,6 +62,7 @@ func (c *CLI) Open(ctx context.Context, source secrets.Source) error {
 		return err
 	}
 	if st.Status == StatusUnlocked {
+		c.userID = st.UserID
 		return nil
 	}
 	if st.Status != StatusLocked {
@@ -70,6 +73,7 @@ func (c *CLI) Open(ctx context.Context, source secrets.Source) error {
 		return err
 	}
 	c.session = key
+	c.userID = st.UserID
 	return nil
 }
 
@@ -122,10 +126,12 @@ func (c *CLI) Close(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.session) == 0 {
+		c.userID = ""
 		return nil
 	}
 	token := c.session
 	c.session = nil
+	c.userID = ""
 	defer wipe(token)
 	return c.lock(ctx, token)
 }
@@ -392,11 +398,18 @@ func (c *CLI) readItems(ctx context.Context, session []byte, now time.Time) ([]L
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		for i := range items {
+			if items[i].Login != nil {
+				wipe(items[i].Login.Password)
+			}
+		}
+	}()
 
 	names := folderNames(folders)
 	out := make([]Login, 0, len(items))
 	for _, it := range items {
-		item, ok, err := decodeLogin(it, names, now)
+		item, ok, err := decodeLogin(it, names, now, c.userID)
 		if err != nil {
 			return nil, err
 		}
@@ -407,8 +420,13 @@ func (c *CLI) readItems(ctx context.Context, session []byte, now time.Time) ([]L
 	return out, nil
 }
 
-func decodeLogin(it rawItem, names map[string]string, now time.Time) (Login, bool, error) {
-	if it.Login == nil || len(it.Login.Password) == 0 {
+func decodeLogin(it rawItem, names map[string]string, now time.Time, userID string) (Login, bool, error) {
+	if it.Login == nil {
+		return Login{}, false, nil
+	}
+	password := it.Login.Password
+	defer wipe(password)
+	if len(password) == 0 {
 		return Login{}, false, nil
 	}
 	changedRaw := ""
@@ -419,11 +437,22 @@ func decodeLogin(it rawItem, names map[string]string, now time.Time) (Login, boo
 	if err != nil {
 		return Login{}, false, err
 	}
+	classification := metrics.Classify(password)
+	strength := metrics.Strength(password)
+	entropy := metrics.Entropy(password)
+	maskedUsername := metrics.MaskUsername(it.Login.Username)
+	hash := metrics.DuplicateHash(password, userID)
+	metrics.HIBPPrefix(password)
 	return Login{
-		ID:      it.ID,
-		Name:    it.Name,
-		Folder:  lookupFolder(folderID(it.FolderID), names),
-		AgeDays: ageDays(changed, now),
+		ID:             it.ID,
+		Name:           it.Name,
+		MaskedUsername: maskedUsername,
+		Folder:         lookupFolder(folderID(it.FolderID), names),
+		AgeDays:        ageDays(changed, now),
+		Length:         classification.Length,
+		Entropy:        entropy,
+		Strength:       strength,
+		Hash:           hash,
 	}, true, nil
 }
 
