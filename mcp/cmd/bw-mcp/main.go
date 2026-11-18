@@ -1,10 +1,9 @@
 // Command bw-mcp is the Vault Guardian MCP server.
-// It speaks MCP over stdin/stdout until the client disconnects.
+// It serves MCP over Streamable HTTP.
 package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -24,9 +23,5 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	err := server.Run(ctx)
-	if errors.Is(err, context.Canceled) {
-		return nil
-	}
-	return err
+	return server.Run(ctx)
 }

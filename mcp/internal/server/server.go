@@ -1,53 +1,110 @@
 // Package server builds the Vault Guardian MCP server.
-//
-// The server speaks MCP over stdio. Stdout is reserved for protocol
-// messages, so all logging must go to stderr.
 package server
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"os"
+	"time"
+
+	"bw-mcp/internal/bw"
+	"bw-mcp/internal/cache"
+	"bw-mcp/internal/secrets"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const (
-	name    = "bw-mcp"
-	title   = "Vault Guardian"
-	version = "0.1.0"
+	name              = "bw-mcp"
+	title             = "Vault Guardian"
+	version           = "0.1.0"
+	address           = ":8080"
+	path              = "/mcp"
+	defaultDataDir    = "/var/lib/bw"
+	defaultSecretsDir = "/run/secrets"
+	dataDirEnv        = "BW_DATA_DIR"
+	secretsDirEnv     = "BW_SECRETS_DIR"
+	instructions      = "Vault Guardian reports metadata for a local Bitwarden vault. Tools return item id, name, folder, and age in days. They do not return passwords."
 )
 
-// New returns a configured MCP server. logger may be nil.
-func New(logger *slog.Logger) *mcp.Server {
+// New returns a configured MCP server. logger and store may be nil.
+// A nil store leaves the vault tools registered; calls then return an error.
+func New(logger *slog.Logger, store *cache.Cache) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{
 		Name:        name,
 		Title:       title,
 		Version:     version,
 		Description: "Local MCP server for Vault Guardian.",
 	}, &mcp.ServerOptions{
-		Instructions: "Vault Guardian MCP server. No vault tools are registered yet.",
+		Instructions: instructions,
 		Logger:       logger,
 	})
-	registerTools(s)
+	registerTools(s, store)
 	return s
 }
 
-// Run serves the server on stdin/stdout until the client disconnects or ctx is cancelled.
+// Run serves the server over Streamable HTTP until ctx is cancelled.
 func Run(ctx context.Context) error {
+	// The data directory is private to this container and must already exist.
+	dataDir, secretsDir := configuredDirs()
+	cli := &bw.CLI{Runner: bw.ExecRunner{}, DataDir: dataDir}
+	store := cache.New(cli, secrets.NewFileSource(secretsDir), time.Now)
+
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	return New(logger).Run(ctx, &mcp.StdioTransport{})
+	addr := os.Getenv("MCP_ADDR")
+	if addr == "" {
+		addr = address
+	}
+
+	mcpServer := New(logger, store)
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return mcpServer
+	}, &mcp.StreamableHTTPOptions{Logger: logger})
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- httpServer.ListenAndServe()
+	}()
+	logger.Info("MCP server listening", "address", addr, "endpoint", path)
+
+	select {
+	case err := <-serverErr:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		if err := <-serverErr; !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
+	}
 }
 
-type pingResult struct {
-	Status string `json:"status" jsonschema:"ok when the server is running"`
-}
+func configuredDirs() (string, string) {
+	dataDir := os.Getenv(dataDirEnv)
+	if dataDir == "" {
+		dataDir = defaultDataDir
+	}
 
-func registerTools(s *mcp.Server) {
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ping",
-		Description: "Check that the Vault Guardian MCP server is running.",
-	}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, pingResult, error) {
-		return nil, pingResult{Status: "ok"}, nil
-	})
+	secretsDir := os.Getenv(secretsDirEnv)
+	if secretsDir == "" {
+		secretsDir = defaultSecretsDir
+	}
+
+	return dataDir, secretsDir
 }

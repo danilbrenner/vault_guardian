@@ -23,7 +23,7 @@ Agent (Node.js) — long-running process
         ↓ HTTP (internal docker network only)
 MCP Server (Go) — metrics + cache
         ↓
-Bitwarden CLI + HIBP range API
+Bitwarden CLI
 ```
 
 - **Two containers** on the same host (Raspberry Pi or similar).
@@ -37,7 +37,7 @@ Bitwarden CLI + HIBP range API
 
 - Authenticate and unlock Bitwarden CLI using secrets
 - Sync vault on demand
-- Compute metrics for every login item
+- Compute metrics for every login
 - Maintain an in-memory cache
 - Expose a small set of HTTP tools
 - Never return passwords, TOTP, or other sensitive fields
@@ -50,8 +50,8 @@ On every cache miss or `force_sync`:
 2. If `unauthenticated` → `bw login --apikey`
 3. If `locked` → `bw unlock` (master password from secret)
 4. `bw sync`
-5. Read items, compute metrics, update cache
-6. Immediately `bw lock` or `bw logout`
+5. Read logins, compute metrics, update cache
+6. Immediately `bw lock`
 7. On error → retry once, then return error to the caller
 
 Session is never kept open longer than necessary.
@@ -66,51 +66,50 @@ Session is never kept open longer than necessary.
 
 ### 3.4 Tools
 
-#### `list_items`
+#### `list_logins`
 
 **Parameters:**
-- `filter` (optional): `"all"` | `"weak"` | `"pwned"` | `"old"` | `"duplicate"`
-- `min_age_days` (optional): number
+- `filter` (optional): `"all"` | `"weak"` | `"duplicate"`
+- `min_age_days` (optional): number. When set, keep items with `age_days >= min_age_days`. ANDs with `filter`. Omitted means no age constraint. There is no `old` filter and no default.
 
-**Returns:** Array of item summaries:
+**Returns:** An object containing an array of login summaries:
 
 ```json
 {
-  "id": "string",
-  "name": "string",
-  "masked_username": "string",
-  "folder": "string | null",
-  "age_days": "number",
-  "length": "number",
-  "entropy": "number",
-  "strength": "VeryWeak | Weak | Moderate | Strong | VeryStrong",
-  "has_digit": "boolean",
-  "has_lower": "boolean",
-  "has_upper": "boolean",
-  "has_symbol": "boolean",
-  "pwned_count": "number",
-  "hash": "string"
+  "logins": [
+    {
+      "id": "string",
+      "name": "string",
+      "masked_username": "string",
+      "folder": "string | null",
+      "age_days": "number",
+      "length": "number",
+      "entropy": "number",
+      "strength": "VeryWeak | Weak | Moderate | Strong | VeryStrong",
+      "hash": "string"
+    }
+  ]
 }
 ```
 
-#### `get_item`
+#### `get_login`
 
 **Parameters:** `{ "id": "string" }`
 
-**Returns:** Full metrics for a single item (same fields as above).
+**Returns:** Full metrics for a single login (same fields as above).
 
 #### `get_duplicates`
 
 **Parameters:** none (or optional `min_count`)
 
-**Returns:** Groups of items sharing the same hash:
+**Returns:** Groups of logins sharing the same hash:
 
 ```json
 [
   {
     "hash": "string",
     "count": "number",
-    "items": [
+    "logins": [
       { "id": "string", "name": "string", "masked_username": "string", "folder": "string | null" }
     ]
   }
@@ -125,7 +124,7 @@ Session is never kept open longer than necessary.
 ```json
 {
   "synced_at": "ISO8601 timestamp",
-  "items_count": "number"
+  "logins_count": "number"
 }
 ```
 
@@ -138,7 +137,7 @@ Session is never kept open longer than necessary.
 {
   "last_sync": "ISO8601 timestamp",
   "cache_age_minutes": "number",
-  "items_in_cache": "number",
+  "logins_in_cache": "number",
   "bw_status": "unlocked | locked | unauthenticated"
 }
 ```
@@ -243,19 +242,12 @@ or
 Total items: 247
 Critical: 8
 
-⚠️ Problems in critical (2):
+⚠️ Problems in critical (1):
 
 1. GitHub (d***l@gmail.com)
    • Strength: Weak
    • Age: 640 days
-   • Pwned: no
    • Recommendation: change
-
-2. AWS Root (a***n@company.com)
-   • Strength: Moderate
-   • Age: 210 days
-   • Pwned: 2
-   • Recommendation: change immediately
 ```
 
 - Only critical items with problems are listed.
@@ -267,7 +259,16 @@ Critical: 8
 - Daily: lightweight check (can be silent if no new critical problems)
 - Weekly: full `/report` pushed to Telegram
 
-## 5. Out of Scope for v1
+## 5. Future
+
+Breach checks against the HIBP range API are not part of v1.
+
+- Send the password prefix to `https://api.pwnedpasswords.com/range/{prefix}` with `Add-Padding: true`.
+- `pwned_count` is the matching count, or `0`. Never store or return the SHA-1.
+- `list_logins` gains a `pwned` filter (`pwned_count > 0`).
+- A pwned critical item is `change immediately`. Weak remains `change`.
+
+## 6. Out of Scope for v1
 
 - Generating new passwords
 - Writing anything back to Bitwarden
@@ -277,14 +278,14 @@ Critical: 8
 - Web UI
 - Exposing any port to the host
 
-## 6. Deployment Notes
+## 7. Deployment Notes
 
 - Two containers, internal Docker network only
 - Bitwarden API key + master password supplied to the MCP container via Docker secrets
 - Agent container has no secrets and no filesystem access to the MCP container
 - Exact orchestration tool (Docker Compose, Ansible, Terraform, etc.) is left open
 
-## 7. Open Implementation Details
+## 8. Open Implementation Details
 
 - Exact HTTP routes / OpenAPI shape of the MCP
 - Choice of persistence for agent memory (SQLite vs JSON)

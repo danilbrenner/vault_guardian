@@ -1,0 +1,226 @@
+// Package cache holds the public vault items served by the MCP tools.
+// The slice is mutex-guarded. Concurrent refreshes share one in-flight sync.
+package cache
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"bw-mcp/internal/bw"
+	"bw-mcp/internal/secrets"
+
+	"golang.org/x/sync/singleflight"
+)
+
+// ErrNotFound is returned when the cache has no item with the requested id.
+var ErrNotFound = errors.New("item not found")
+
+// Status is a cache snapshot plus the current Bitwarden CLI status.
+// LastSync is zero when the cache has never been filled.
+type Status struct {
+	LastSync   time.Time
+	AgeMinutes int
+	Items      int
+	BWStatus   string
+}
+
+// Cache stores only public items.
+// The CLI clears password buffers before returning items.
+// A refresh opens the CLI, syncs, reads items, and closes.
+// The whole refresh is retried once. Individual bw calls are not retried.
+type Cache struct {
+	cli          *bw.CLI
+	secretSource secrets.Source
+	now          func() time.Time
+
+	// flight coalesces concurrent refreshes into one sync.
+	flight singleflight.Group
+
+	// entered, when set, runs as a caller enters ForceSync.
+	// Tests use it to line up concurrent refreshes. Production leaves it nil.
+	entered func()
+
+	// refreshMu keeps the shared refresh from interleaving with another bw session.
+	refreshMu sync.Mutex
+
+	mu       sync.Mutex
+	items    []bw.Login
+	synced   bool
+	lastSync time.Time
+}
+
+// New returns a cache that reads cli.
+// A nil now function uses time.Now.
+func New(cli *bw.CLI, source secrets.Source, now func() time.Time) *Cache {
+	if now == nil {
+		now = time.Now
+	}
+	return &Cache{
+		cli:          cli,
+		secretSource: source,
+		now:          now,
+	}
+}
+
+// ListItems returns the cached public items.
+// An empty cache (no successful sync yet) refreshes once.
+// A successful sync that stored zero items does not refresh again.
+func (c *Cache) ListItems(ctx context.Context) ([]bw.Login, error) {
+	if items, ok := c.snapshot(); ok {
+		return items, nil
+	}
+	if _, _, err := c.ForceSync(ctx); err != nil {
+		return nil, err
+	}
+	items, ok := c.snapshot()
+	if !ok {
+		return nil, errors.New("cache: sync did not fill the cache")
+	}
+	return items, nil
+}
+
+// GetItem returns one cached item. It does not sync.
+func (c *Cache) GetItem(id string) (bw.Login, error) {
+	if id == "" {
+		return bw.Login{}, errors.New("cache: item id is empty")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, it := range c.items {
+		if it.ID == id {
+			return it, nil
+		}
+	}
+	return bw.Login{}, fmt.Errorf("%w: %s", ErrNotFound, id)
+}
+
+// ForceSync opens the CLI, syncs, reads public items, and replaces the cache.
+func (c *Cache) ForceSync(ctx context.Context) (time.Time, int, error) {
+	if c == nil || c.cli == nil {
+		return time.Time{}, 0, errors.New("cache: cli is nil")
+	}
+	if c.entered != nil {
+		c.entered()
+	}
+	res, err := c.shareRefresh(ctx, c.sync)
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+	return res.at, res.n, nil
+}
+
+// shareRefresh runs one vault refresh for every caller that arrives while it is in flight.
+// Followers wait for that refresh and receive its result. A later call starts a new refresh.
+func (c *Cache) shareRefresh(ctx context.Context, fn func(context.Context) (refreshResult, error)) (refreshResult, error) {
+	v, err, _ := c.flight.Do("refresh", func() (any, error) {
+		res, err := fn(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return res, nil
+	})
+	if err != nil {
+		return refreshResult{}, err
+	}
+	res, ok := v.(refreshResult)
+	if !ok {
+		return refreshResult{}, errors.New("cache: refresh result is missing")
+	}
+	return res, nil
+}
+
+func (c *Cache) sync(ctx context.Context) (refreshResult, error) {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+
+	items, err := c.withItems(ctx)
+	if err != nil {
+		return refreshResult{}, err
+	}
+	syncedAt := c.now()
+	c.mu.Lock()
+	c.items = items
+	c.synced = true
+	c.lastSync = syncedAt
+	c.mu.Unlock()
+	return refreshResult{at: syncedAt, n: len(items)}, nil
+}
+
+type refreshResult struct {
+	at time.Time
+	n  int
+}
+
+// Status reports cache age and the CLI status. It does not sync.
+func (c *Cache) Status(ctx context.Context) (Status, error) {
+	if c == nil || c.cli == nil {
+		return Status{}, errors.New("cache: cli is nil")
+	}
+	st, err := c.cli.Status(ctx)
+	if err != nil {
+		return Status{}, err
+	}
+	if st.Status == "" {
+		return Status{}, errors.New("cache: bw status is empty")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return Status{
+		LastSync:   c.lastSync,
+		AgeMinutes: ageMinutes(c.lastSync, c.now()),
+		Items:      len(c.items),
+		BWStatus:   st.Status,
+	}, nil
+}
+
+// withItems opens, syncs, reads public items, and closes.
+// The whole operation is retried once. A new Open invalidates older session tokens,
+// so a token is never reused across attempts. After success the CLI is locked.
+func (c *Cache) withItems(ctx context.Context) ([]bw.Login, error) {
+	items, err := c.once(ctx)
+	if err == nil || ctx.Err() != nil {
+		return items, err
+	}
+	return c.once(ctx)
+}
+
+func (c *Cache) once(ctx context.Context) (items []bw.Login, err error) {
+	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err = c.cli.Open(ctx, c.secretSource); err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := c.cli.Close(ctx); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
+	if err = c.cli.Sync(ctx); err != nil {
+		return nil, err
+	}
+	items, err = c.cli.Read(ctx, c.now())
+	if err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (c *Cache) snapshot() ([]bw.Login, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.synced {
+		return nil, false
+	}
+	return append([]bw.Login{}, c.items...), true
+}
+
+func ageMinutes(last, now time.Time) int {
+	if last.IsZero() || !now.After(last) {
+		return 0
+	}
+	return int(now.Sub(last) / time.Minute)
+}
