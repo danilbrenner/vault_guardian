@@ -1,5 +1,6 @@
 // Package cache holds the public vault items served by the MCP tools.
-// The slice is mutex-guarded. Concurrent misses are not coalesced; singleflight comes later.
+// The slice is mutex-guarded. Refresh goes through shareRefresh.
+// Concurrent callers do not share one refresh yet.
 package cache
 
 import (
@@ -11,6 +12,8 @@ import (
 
 	"bw-mcp/internal/bw"
 	"bw-mcp/internal/secrets"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // ErrNotFound is returned when the cache has no item with the requested id.
@@ -25,14 +28,18 @@ type Status struct {
 	BWStatus   string
 }
 
-// Cache is the prototype item store.
-// It stores only public items. The CLI clears password buffers before returning items.
+// Cache stores only public items.
+// The CLI clears password buffers before returning items.
 // A refresh opens the CLI, syncs, reads items, and closes.
 // The whole refresh is retried once. Individual bw calls are not retried.
 type Cache struct {
 	cli          *bw.CLI
 	secretSource secrets.Source
 	now          func() time.Time
+
+	// flight is the singleflight group for refresh.
+	// shareRefresh does not use it yet.
+	flight singleflight.Group
 
 	// refreshMu keeps two bw sessions from interleaving.
 	// It does not collapse concurrent callers into one sync.
@@ -94,21 +101,39 @@ func (c *Cache) ForceSync(ctx context.Context) (time.Time, int, error) {
 	if c == nil || c.cli == nil {
 		return time.Time{}, 0, errors.New("cache: cli is nil")
 	}
+	res, err := c.shareRefresh(ctx, c.sync)
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+	return res.at, res.n, nil
+}
+
+// shareRefresh is the singleflight entry for a vault refresh.
+// It does not share work yet.
+func (c *Cache) shareRefresh(ctx context.Context, fn func(context.Context) (refreshResult, error)) (refreshResult, error) {
+	return fn(ctx)
+}
+
+func (c *Cache) sync(ctx context.Context) (refreshResult, error) {
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
 
 	items, err := c.withItems(ctx)
 	if err != nil {
-		return time.Time{}, 0, err
+		return refreshResult{}, err
 	}
-
 	syncedAt := c.now()
 	c.mu.Lock()
 	c.items = items
 	c.synced = true
 	c.lastSync = syncedAt
 	c.mu.Unlock()
-	return syncedAt, len(items), nil
+	return refreshResult{at: syncedAt, n: len(items)}, nil
+}
+
+type refreshResult struct {
+	at time.Time
+	n  int
 }
 
 // Status reports cache age and the CLI status. It does not sync.
