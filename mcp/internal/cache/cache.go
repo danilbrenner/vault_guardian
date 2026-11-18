@@ -1,6 +1,5 @@
 // Package cache holds the public vault items served by the MCP tools.
-// The slice is mutex-guarded. Refresh goes through shareRefresh.
-// Concurrent callers do not share one refresh yet.
+// The slice is mutex-guarded. Concurrent refreshes share one in-flight sync.
 package cache
 
 import (
@@ -37,16 +36,14 @@ type Cache struct {
 	secretSource secrets.Source
 	now          func() time.Time
 
-	// flight is the singleflight group for refresh.
-	// shareRefresh does not use it yet.
+	// flight coalesces concurrent refreshes into one sync.
 	flight singleflight.Group
 
 	// entered, when set, runs as a caller enters ForceSync.
 	// Tests use it to line up concurrent refreshes. Production leaves it nil.
 	entered func()
 
-	// refreshMu keeps two bw sessions from interleaving.
-	// It does not collapse concurrent callers into one sync.
+	// refreshMu keeps the shared refresh from interleaving with another bw session.
 	refreshMu sync.Mutex
 
 	mu       sync.Mutex
@@ -115,10 +112,24 @@ func (c *Cache) ForceSync(ctx context.Context) (time.Time, int, error) {
 	return res.at, res.n, nil
 }
 
-// shareRefresh is the singleflight entry for a vault refresh.
-// It does not share work yet.
+// shareRefresh runs one vault refresh for every caller that arrives while it is in flight.
+// Followers wait for that refresh and receive its result. A later call starts a new refresh.
 func (c *Cache) shareRefresh(ctx context.Context, fn func(context.Context) (refreshResult, error)) (refreshResult, error) {
-	return fn(ctx)
+	v, err, _ := c.flight.Do("refresh", func() (any, error) {
+		res, err := fn(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return res, nil
+	})
+	if err != nil {
+		return refreshResult{}, err
+	}
+	res, ok := v.(refreshResult)
+	if !ok {
+		return refreshResult{}, errors.New("cache: refresh result is missing")
+	}
+	return res, nil
 }
 
 func (c *Cache) sync(ctx context.Context) (refreshResult, error) {
