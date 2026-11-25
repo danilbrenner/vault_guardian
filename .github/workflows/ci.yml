@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  mcp:
+    name: MCP
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: mcp/go.mod
+          cache-dependency-path: mcp/go.sum
+
+      - name: Set up just
+        uses: extractions/setup-just@v3
+
+      - name: Run MCP tests
+        run: just test-mcp
+
+      - name: Build MCP server
+        working-directory: mcp
+        run: go build -o /dev/null ./cmd/bw-mcp
