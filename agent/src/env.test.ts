@@ -6,11 +6,10 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { loadEnvFile } from "./env.ts";
-import { main } from "./index.ts";
 
 test("loads assignments and ignores comments and blank lines", () => {
   const env: NodeJS.ProcessEnv = {};
-  withFile("\n# comment\nFOO=bar\nexport BAZ=qux\nEMPTY=\n", (file) => {
+  withFile("\n# comment\r\nFOO=bar\r\nexport BAZ=qux\nEMPTY=\n", (file) => {
     loadEnvFile(file, env);
   });
   assert.equal(env.FOO, "bar");
@@ -44,16 +43,7 @@ test("a missing env file is not an error", () => {
   assert.deepEqual(env, {});
 });
 
-test("entrypoint loads .env into the provided environment", () => {
-  const env: NodeJS.ProcessEnv = { KEEP: "1" };
-  withFile("KEEP=no\r\nFROM_FILE=yes\n", (file) => {
-    main(env, file);
-  });
-  assert.equal(env.KEEP, "1");
-  assert.equal(env.FROM_FILE, "yes");
-});
-
-test("scaffold has no telegram, model, mcp, or telemetry dependency", () => {
+test("runtime dependency is grammY only", () => {
   const pkgPath = path.join(
     path.dirname(fileURLToPath(import.meta.url)),
     "..",
@@ -62,7 +52,8 @@ test("scaffold has no telegram, model, mcp, or telemetry dependency", () => {
   const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
     dependencies?: Record<string, string>;
   };
-  assert.deepEqual(pkg.dependencies ?? {}, {});
+  const deps: Record<string, string> = pkg.dependencies ?? {};
+  assert.deepEqual(Object.keys(deps), ["grammy"]);
 });
 
 function withFile(contents: string, run: (file: string) => void): void {

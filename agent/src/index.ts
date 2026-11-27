@@ -1,20 +1,25 @@
 // Agent process entrypoint.
-// Later slices start Telegram from here. This slice only loads the environment.
+// Loads the environment, then long-polls Telegram. No command router.
 
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import type { Bot } from "grammy";
+
 import { loadEnvFile } from "./env.ts";
+import { createBot, startPolling, telegramToken } from "./telegram.ts";
 
 export function envFile(): string {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".env");
 }
 
-export function main(
+export async function main(
   env: NodeJS.ProcessEnv = process.env,
   file = envFile(),
-): void {
+  start: (bot: Bot) => Promise<void> = startPolling,
+): Promise<void> {
   loadEnvFile(file, env);
+  await start(createBot(telegramToken(env)));
 }
 
 function isDirectRun(): boolean {
@@ -24,5 +29,9 @@ function isDirectRun(): boolean {
 }
 
 if (isDirectRun()) {
-  main();
+  main().catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`agent: ${message}`);
+    process.exitCode = 1;
+  });
 }

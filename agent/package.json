@@ -13,5 +13,8 @@
   "devDependencies": {
     "@types/node": "^26.6.11",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "grammy": "^1.48.0"
   }
 }
