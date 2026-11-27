@@ -3,6 +3,7 @@
 
 import { Bot } from "grammy";
 
+import { allowOnly, type DropLog } from "./allowlist.ts";
 import { ConfigError } from "./env.ts";
 
 const REPLY = "Vault Guardian is listening.";
@@ -15,8 +16,12 @@ export function telegramToken(env: NodeJS.ProcessEnv): string {
   return raw.trim();
 }
 
-export function createBot(token: string): Bot {
+export function createBot(
+  token: string,
+  options: { allowedChatId: number; log?: DropLog },
+): Bot {
   const bot = new Bot(token);
+  bot.use(allowOnly(options.allowedChatId, options.log));
   bot.on("message:text", async (ctx) => {
     await ctx.reply(REPLY);
   });

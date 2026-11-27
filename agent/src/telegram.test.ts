@@ -68,7 +68,7 @@ test("a missing token fails closed and does not start polling", async () => {
 test("entrypoint loads the token from .env and starts polling", async () => {
   const env: NodeJS.ProcessEnv = {};
   let token = "";
-  await withFile("TELEGRAM_BOT_TOKEN= 123:from-file \n", async (file) => {
+  await withFile("TELEGRAM_BOT_TOKEN= 123:from-file \nALLOWED_CHAT_ID=42\n", async (file) => {
     await main(env, file, async (bot) => {
       token = bot.token;
     });
@@ -77,7 +77,10 @@ test("entrypoint loads the token from .env and starts polling", async () => {
 });
 
 test("an existing token is not overridden by the env file", async () => {
-  const env: NodeJS.ProcessEnv = { TELEGRAM_BOT_TOKEN: "123:from-env" };
+  const env: NodeJS.ProcessEnv = {
+    TELEGRAM_BOT_TOKEN: "123:from-env",
+    ALLOWED_CHAT_ID: "42",
+  };
   let token = "";
   await withFile("TELEGRAM_BOT_TOKEN=123:from-file\n", async (file) => {
     await main(env, file, async (bot) => {
@@ -100,7 +103,9 @@ test("source does not call the Telegram HTTP API", () => {
 type Call = { method: string; chatId?: number; text?: string };
 
 async function deliver(update: Update): Promise<{ calls: Call[] }> {
-  const bot = createBot("123:test");
+  const chatId = update.message?.chat.id;
+  if (chatId === undefined) throw new Error("test update has no chat");
+  const bot = createBot("123:test", { allowedChatId: chatId });
   bot.botInfo = botInfo;
   const calls: Call[] = [];
   bot.api.config.use(async (_prev, method, payload) => {

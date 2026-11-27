@@ -1,11 +1,12 @@
 // Agent process entrypoint.
-// Loads the environment, then long-polls Telegram. No command router.
+// Loads the environment, then long-polls Telegram for one allowed chat.
 
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type { Bot } from "grammy";
 
+import { allowedChatId } from "./allowlist.ts";
 import { loadEnvFile } from "./env.ts";
 import { createBot, startPolling, telegramToken } from "./telegram.ts";
 
@@ -19,7 +20,9 @@ export async function main(
   start: (bot: Bot) => Promise<void> = startPolling,
 ): Promise<void> {
   loadEnvFile(file, env);
-  await start(createBot(telegramToken(env)));
+  const token = telegramToken(env);
+  const chatId = allowedChatId(env);
+  await start(createBot(token, { allowedChatId: chatId }));
 }
 
 function isDirectRun(): boolean {
