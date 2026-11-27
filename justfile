@@ -10,3 +10,7 @@ inspect-mcp:
 # Run MCP server tests.
 test-mcp:
     cd mcp && go test ./...
+
+# Run agent tests.
+test-agent:
+    cd agent && npm test
