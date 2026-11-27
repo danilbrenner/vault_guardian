@@ -45,6 +45,9 @@ test("a command is an ordinary message, not a separate handler", { timeout: 2_00
 test("startPolling uses long polling and does not pass webhook options", async () => {
   const args: unknown[][] = [];
   await startPolling({
+    api: {
+      setMyCommands: async () => true,
+    },
     start: async (...received: unknown[]) => {
       args.push(received);
     },

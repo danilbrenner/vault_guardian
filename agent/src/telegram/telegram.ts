@@ -2,8 +2,10 @@
 // Do not call the Telegram HTTP API from this process, and do not add another client.
 
 import { Bot } from "grammy";
+import type { BotCommand } from "grammy/types";
 
 import { allowOnly, type DropLog } from "./allowlist.ts";
+import { registerCommands } from "./commands.ts";
 
 export type Reply = (text: string) => Promise<string>;
 
@@ -28,7 +30,8 @@ export function createBot(
 }
 
 export function startPolling(bot: {
+  api: { setMyCommands: (commands: readonly BotCommand[]) => Promise<true> };
   start: () => Promise<void>;
 }): Promise<void> {
-  return bot.start();
+  return registerCommands(bot).then(() => bot.start());
 }

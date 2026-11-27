@@ -25,6 +25,8 @@ The bot does not start without `ALLOWED_CHAT_ID`. After it is running, a message
 
 Each message in that chat gets one completed reply. The bot does not stream. Set `OPENAI_API_KEY` and `OPENAI_MODEL` in `agent/.env`. Copy `agent/.env.example` to `agent/.env`. The process does not start if either value is missing. It never asks for a password.
 
+`/report`, `/sync`, `/status`, `/important`, `/forget`, `/start`, and `/help` are ordinary messages. They go to the same reply as any other text. There is no separate command handler.
+
 ## MCP server
 
 The MCP server uses Streamable HTTP at `http://localhost:8080/mcp` by default. Run it with `just run-mcp`, which sources `mcp/.env` in the same shell before starting the server. Copy `mcp/.env.example` to `mcp/.env` and set `BW_DATA_DIR` to a writable directory; otherwise bw falls back to `/var/lib/bw`. Set `MCP_ADDR` to change the listen address. Set `BW_DATA_DIR` and `BW_SECRETS_DIR` to override the default Bitwarden data (`/var/lib/bw`) and secret-file (`/run/secrets`) directories. To inspect a running server, use `just inspect-mcp`. The endpoint has no authentication, so keep it on a trusted network and do not expose it publicly.
