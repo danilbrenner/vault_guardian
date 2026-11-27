@@ -10,7 +10,7 @@ Vault Guardian is a personal agent that regularly analyzes a Bitwarden vault and
 
 - Stateless-ish MCP server (Go) that returns password metrics
 - Agent (Node.js) with persistent memory for critical items
-- Telegram bot as the sole user interface (long polling)
+- Telegram bot as the sole user interface (grammY, long polling)
 - Daily check + weekly report
 - Two-container deployment for isolation
 
@@ -30,6 +30,8 @@ Bitwarden CLI
 - MCP container holds Bitwarden secrets (API key + master password) via Docker secrets.
 - Agent container has no access to Bitwarden credentials or the MCP filesystem.
 - Communication between containers is HTTP only, on an internal Docker network. Nothing is published to the host.
+- The agent uses grammY for Telegram and the Vercel AI SDK with the OpenAI provider for model calls (§4.6).
+- Both containers emit OpenTelemetry traces (§4.6). Export, when configured, is not published to the host.
 
 ## 3. MCP Server (Go)
 
@@ -186,7 +188,8 @@ Usernames are masked before leaving the MCP (e.g. `d***l@gmail.com`).
 
 ### 4.1 Responsibilities
 
-- Telegram bot (long polling)
+- Telegram bot via grammY (long polling)
+- Model calls through the Vercel AI SDK and the OpenAI provider (§4.6)
 - Persistent memory of critical items
 - Scheduling (daily check + weekly report) via in-process cron
 - Interpreting MCP metrics and generating recommendations
@@ -259,6 +262,12 @@ Critical: 8
 - Daily: lightweight check (can be silent if no new critical problems)
 - Weekly: full `/report` pushed to Telegram
 
+### 4.6 Stack
+
+- **Telegram:** grammY. Long polling only. No webhook, and no direct calls to `api.telegram.org`.
+- **Model:** Vercel AI SDK (`ai`) with the OpenAI provider (`@ai-sdk/openai`). No other provider in v1. `OPENAI_API_KEY` and `OPENAI_MODEL` are required; a missing value fails closed. Do not call the OpenAI HTTP API directly.
+- **Telemetry:** OpenTelemetry traces in both containers. The agent also registers the AI SDK OpenTelemetry integration (`@ai-sdk/otel`). Export OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. No endpoint means no exporter, and the process still starts. Spans and logs must not carry message text, prompts, completions, vault fields, passwords, session tokens, or API keys.
+
 ## 5. Future
 
 Breach checks against the HIBP range API are not part of v1.
@@ -282,7 +291,8 @@ Breach checks against the HIBP range API are not part of v1.
 
 - Two containers, internal Docker network only
 - Bitwarden API key + master password supplied to the MCP container via Docker secrets
-- Agent container has no secrets and no filesystem access to the MCP container
+- Agent container has no Bitwarden secrets and no filesystem access to the MCP container. Its Telegram token, `OPENAI_API_KEY`, and `OPENAI_MODEL` are runtime environment only.
+- `OTEL_EXPORTER_OTLP_ENDPOINT` is optional. When set, both containers export traces to it. Do not publish that port.
 - Exact orchestration tool (Docker Compose, Ansible, Terraform, etc.) is left open
 
 ## 8. Open Implementation Details
@@ -291,7 +301,6 @@ Breach checks against the HIBP range API are not part of v1.
 - Choice of persistence for agent memory (SQLite vs JSON)
 - Precise nightly sync schedule inside MCP
 - Retry/backoff policy details
-- Logging and observability
 
 ---
 *End of v1 specification*

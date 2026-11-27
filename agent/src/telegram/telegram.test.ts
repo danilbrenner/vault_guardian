@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -8,9 +7,9 @@ import { fileURLToPath } from "node:url";
 import { Bot } from "grammy";
 import type { BotFullInfo, Update } from "grammy/types";
 
-import { ConfigError } from "./env.ts";
-import { main } from "./index.ts";
-import { createBot, startPolling, telegramToken } from "./telegram.ts";
+import { ConfigError } from "../env.ts";
+import { main } from "../index.ts";
+import { createBot, startPolling } from "./telegram.ts";
 
 const REPLY = "Vault Guardian is listening.";
 
@@ -56,37 +55,22 @@ test("startPolling uses long polling and does not pass webhook options", async (
 test("a missing token fails closed and does not start polling", async () => {
   let started = false;
   await assert.rejects(
-    () => main({}, missingFile(), async () => {
+    () => main({}, async () => {
       started = true;
     }),
     (err: unknown) => err instanceof ConfigError && /TELEGRAM_BOT_TOKEN/.test(err.message),
   );
   assert.equal(started, false);
-  assert.throws(() => telegramToken({ TELEGRAM_BOT_TOKEN: "   " }), ConfigError);
 });
 
-test("entrypoint loads the token from .env and starts polling", async () => {
-  const env: NodeJS.ProcessEnv = {};
+test("entrypoint uses the token from the environment and starts polling", async () => {
   let token = "";
-  await withFile("TELEGRAM_BOT_TOKEN= 123:from-file \nALLOWED_CHAT_ID=42\n", async (file) => {
-    await main(env, file, async (bot) => {
+  await main(
+    { TELEGRAM_BOT_TOKEN: " 123:from-env ", ALLOWED_CHAT_ID: "42" },
+    async (bot) => {
       token = bot.token;
-    });
-  });
-  assert.equal(token, "123:from-file");
-});
-
-test("an existing token is not overridden by the env file", async () => {
-  const env: NodeJS.ProcessEnv = {
-    TELEGRAM_BOT_TOKEN: "123:from-env",
-    ALLOWED_CHAT_ID: "42",
-  };
-  let token = "";
-  await withFile("TELEGRAM_BOT_TOKEN=123:from-file\n", async (file) => {
-    await main(env, file, async (bot) => {
-      token = bot.token;
-    });
-  });
+    },
+  );
   assert.equal(token, "123:from-env");
 });
 
@@ -97,6 +81,7 @@ test("source does not call the Telegram HTTP API", () => {
     const text = readFileSync(path.join(dir, name), "utf8");
     assert.equal(text.includes("api.telegram.org"), false, name);
     assert.equal(/\bfetch\s*\(/.test(text), false, name);
+    assert.equal(text.includes("readFileSync"), false, name);
   }
 });
 
@@ -149,22 +134,4 @@ function textUpdate(text: string, chatId: number): Update {
       ...command,
     },
   };
-}
-
-function missingFile(): string {
-  return path.join(tmpdir(), "vault-guardian-missing.env");
-}
-
-async function withFile(
-  contents: string,
-  run: (file: string) => Promise<void>,
-): Promise<void> {
-  const dir = mkdtempSync(path.join(tmpdir(), "vg-env-"));
-  const file = path.join(dir, ".env");
-  writeFileSync(file, contents);
-  try {
-    await run(file);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 }

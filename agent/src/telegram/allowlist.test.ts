@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { test } from "node:test";
 
 import type { Bot, Context } from "grammy";
 import type { BotFullInfo, Update } from "grammy/types";
 
-import { allowedChatId, allowOnly, type DropLog } from "./allowlist.ts";
-import { ConfigError } from "./env.ts";
-import { main } from "./index.ts";
+import { ConfigError } from "../env.ts";
+import { main } from "../index.ts";
+import { allowOnly, type DropLog } from "./allowlist.ts";
 import { createBot } from "./telegram.ts";
 
 const botInfo: BotFullInfo = {
@@ -31,33 +28,12 @@ const botInfo: BotFullInfo = {
   supports_join_request_queries: false,
 };
 
-test("ALLOWED_CHAT_ID is required to start", () => {
-  assert.throws(() => allowedChatId({}), ConfigError);
-  assert.throws(() => allowedChatId({ ALLOWED_CHAT_ID: "" }), ConfigError);
-  assert.throws(() => allowedChatId({ ALLOWED_CHAT_ID: "   " }), ConfigError);
-  assert.equal(allowedChatId({ ALLOWED_CHAT_ID: " 42 " }), 42);
-  assert.equal(allowedChatId({ ALLOWED_CHAT_ID: "-100" }), -100);
-});
-
-test("a non-integer or out-of-range id fails closed", () => {
-  assert.throws(() => allowedChatId({ ALLOWED_CHAT_ID: "12abc" }), ConfigError);
-  assert.throws(() => allowedChatId({ ALLOWED_CHAT_ID: "1.5" }), ConfigError);
-  assert.throws(
-    () => allowedChatId({ ALLOWED_CHAT_ID: "9007199254740993" }),
-    ConfigError,
-  );
-});
-
 test("a missing chat id does not start polling", async () => {
   let started = false;
   await assert.rejects(
-    () => main(
-      { TELEGRAM_BOT_TOKEN: "123:abc" },
-      missingFile(),
-      async () => {
-        started = true;
-      },
-    ),
+    () => main({ TELEGRAM_BOT_TOKEN: "123:abc" }, async () => {
+      started = true;
+    }),
     (err: unknown) => err instanceof ConfigError && /ALLOWED_CHAT_ID/.test(err.message),
   );
   assert.equal(started, false);
@@ -111,15 +87,14 @@ test("an update with no chat gets no reply and no log", async () => {
   assert.deepEqual(logged, []);
 });
 
-test("entrypoint loads the allowlist from .env and drops other chats", async () => {
-  const env: NodeJS.ProcessEnv = {};
+test("entrypoint uses ALLOWED_CHAT_ID and drops other chats", async () => {
   let bot: Bot | undefined;
-  await withFile("TELEGRAM_BOT_TOKEN=123:from-file\nALLOWED_CHAT_ID=-100\n", async (file) => {
-    await main(env, file, async (started) => {
+  await main(
+    { TELEGRAM_BOT_TOKEN: "123:from-env", ALLOWED_CHAT_ID: "-100" },
+    async (started) => {
       bot = started;
-    });
-  });
-  assert.equal(env.ALLOWED_CHAT_ID, "-100");
+    },
+  );
   assert.ok(bot);
   const { calls, lines } = await capture(textUpdate("secret-text", 7), -100, undefined, bot);
   assert.deepEqual(calls, []);
@@ -180,23 +155,4 @@ function textUpdate(text: string, chatId: number): Update {
       text,
     },
   };
-}
-
-function missingFile(): string {
-  return path.join(tmpdir(), "vault-guardian-missing.env");
-}
-
-
-async function withFile(
-  contents: string,
-  run: (file: string) => Promise<void>,
-): Promise<void> {
-  const dir = mkdtempSync(path.join(tmpdir(), "vg-env-"));
-  const file = path.join(dir, ".env");
-  writeFileSync(file, contents);
-  try {
-    await run(file);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 }

@@ -4,17 +4,8 @@
 import { Bot } from "grammy";
 
 import { allowOnly, type DropLog } from "./allowlist.ts";
-import { ConfigError } from "./env.ts";
 
 const REPLY = "Vault Guardian is listening.";
-
-export function telegramToken(env: NodeJS.ProcessEnv): string {
-  const raw = env.TELEGRAM_BOT_TOKEN;
-  if (raw === undefined || raw.trim() === "") {
-    throw new ConfigError("TELEGRAM_BOT_TOKEN is required");
-  }
-  return raw.trim();
-}
 
 export function createBot(
   token: string,
