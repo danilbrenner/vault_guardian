@@ -1,12 +1,14 @@
 // Agent process entrypoint.
 // Reads the process environment, then long-polls Telegram for one allowed chat.
+// Every allowed message is one completed text generation.
 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { Bot } from "grammy";
 
-import { allowedChatId, telegramToken } from "./env.ts";
+import { completeReply } from "./agent/reply.ts";
+import { allowedChatId, openaiApiKey, openaiModel, telegramToken } from "./env.ts";
 import { createBot, startPolling } from "./telegram/telegram.ts";
 
 export async function main(
@@ -15,7 +17,10 @@ export async function main(
 ): Promise<void> {
   const token = telegramToken(env);
   const chatId = allowedChatId(env);
-  await start(createBot(token, { allowedChatId: chatId }));
+  const apiKey = openaiApiKey(env);
+  const model = openaiModel(env);
+  const reply = (text: string) => completeReply(text, { apiKey, model });
+  await start(createBot(token, { allowedChatId: chatId, reply }));
 }
 
 function isDirectRun(): boolean {

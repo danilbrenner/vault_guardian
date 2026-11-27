@@ -9,7 +9,7 @@ import type { BotFullInfo, Update } from "grammy/types";
 
 import { ConfigError } from "../env.ts";
 import { main } from "../index.ts";
-import { createBot, startPolling } from "./telegram.ts";
+import { createBot, startPolling, type Reply } from "./telegram.ts";
 
 const REPLY = "Vault Guardian is listening.";
 
@@ -66,7 +66,12 @@ test("a missing token fails closed and does not start polling", async () => {
 test("entrypoint uses the token from the environment and starts polling", async () => {
   let token = "";
   await main(
-    { TELEGRAM_BOT_TOKEN: " 123:from-env ", ALLOWED_CHAT_ID: "42" },
+    {
+      TELEGRAM_BOT_TOKEN: " 123:from-env ",
+      ALLOWED_CHAT_ID: "42",
+      OPENAI_API_KEY: "sk-test",
+      OPENAI_MODEL: "gpt-test",
+    },
     async (bot) => {
       token = bot.token;
     },
@@ -87,10 +92,13 @@ test("source does not call the Telegram HTTP API", () => {
 
 type Call = { method: string; chatId?: number; text?: string };
 
-async function deliver(update: Update): Promise<{ calls: Call[] }> {
+async function deliver(
+  update: Update,
+  reply: Reply = async () => REPLY,
+): Promise<{ calls: Call[] }> {
   const chatId = update.message?.chat.id;
   if (chatId === undefined) throw new Error("test update has no chat");
-  const bot = createBot("123:test", { allowedChatId: chatId });
+  const bot = createBot("123:test", { allowedChatId: chatId, reply });
   bot.botInfo = botInfo;
   const calls: Call[] = [];
   bot.api.config.use(async (_prev, method, payload) => {

@@ -4,7 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { allowedChatId, ConfigError, telegramToken } from "./env.ts";
+import { allowedChatId, ConfigError, openaiApiKey, openaiModel, telegramToken } from "./env.ts";
 
 test("TELEGRAM_BOT_TOKEN is required and trimmed", () => {
   assert.throws(() => telegramToken({}), ConfigError);
@@ -29,7 +29,7 @@ test("a non-integer or out-of-range id fails closed", () => {
   );
 });
 
-test("runtime dependency is grammY only", () => {
+test("runtime dependencies are grammY, the AI SDK, and the OpenAI provider", () => {
   const pkgPath = path.join(
     path.dirname(fileURLToPath(import.meta.url)),
     "..",
@@ -41,7 +41,12 @@ test("runtime dependency is grammY only", () => {
   };
   const deps: Record<string, string> = pkg.dependencies ?? {};
   const devDeps: Record<string, string> = pkg.devDependencies ?? {};
-  assert.deepEqual(Object.keys(deps), ["grammy"]);
+  assert.deepEqual(Object.keys(deps).sort(), ["@ai-sdk/openai", "ai", "grammy"]);
   assert.equal(typeof devDeps["dotenv"], "string");
   assert.equal(devDeps["dotenv-cli"], undefined);
+  for (const name of [...Object.keys(deps), ...Object.keys(devDeps)]) {
+    assert.equal(/telegraf|node-telegram-bot-api|anthropic|langchain/i.test(name), false, name);
+  }
+  assert.equal(openaiApiKey({ OPENAI_API_KEY: "sk-test" }), "sk-test");
+  assert.equal(openaiModel({ OPENAI_MODEL: "gpt-test" }), "gpt-test");
 });

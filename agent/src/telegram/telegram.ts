@@ -5,17 +5,18 @@ import { Bot } from "grammy";
 
 import { allowOnly, type DropLog } from "./allowlist.ts";
 
-const REPLY = "Vault Guardian is listening.";
+export type Reply = (text: string) => Promise<string>;
 
 export function createBot(
   token: string,
-  options: { allowedChatId: number; log?: DropLog },
+  options: { allowedChatId: number; log?: DropLog; reply: Reply },
 ): Bot {
   const bot = new Bot(token);
   bot.use(allowOnly(options.allowedChatId, options.log));
   bot.on("message:text", async (ctx) => {
     await ctx.react("👀");
-    await ctx.reply(REPLY, {
+    const reply = await options.reply(ctx.message.text);
+    await ctx.reply(reply, {
       reply_parameters: {
         message_id: ctx.message.message_id,
         quote: ctx.message.text,

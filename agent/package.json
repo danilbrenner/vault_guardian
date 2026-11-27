@@ -16,6 +16,8 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^4.0.125",
+    "ai": "^7.0.183",
     "grammy": "^1.48.0"
   }
 }

@@ -90,7 +90,12 @@ test("an update with no chat gets no reply and no log", async () => {
 test("entrypoint uses ALLOWED_CHAT_ID and drops other chats", async () => {
   let bot: Bot | undefined;
   await main(
-    { TELEGRAM_BOT_TOKEN: "123:from-env", ALLOWED_CHAT_ID: "-100" },
+    {
+      TELEGRAM_BOT_TOKEN: "123:from-env",
+      ALLOWED_CHAT_ID: "-100",
+      OPENAI_API_KEY: "sk-test",
+      OPENAI_MODEL: "gpt-test",
+    },
     async (started) => {
       bot = started;
     },
@@ -116,7 +121,11 @@ async function capture(
     lines.push(args);
   };
   try {
-    const bot = existing ?? createBot("123:test", { allowedChatId: allowed, log });
+    const bot = existing ?? createBot("123:test", {
+      allowedChatId: allowed,
+      log,
+      reply: async () => "Vault Guardian is listening.",
+    });
     bot.botInfo = botInfo;
     const calls: Call[] = [];
     bot.api.config.use(async (_prev, method, payload) => {

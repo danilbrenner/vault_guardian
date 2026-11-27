@@ -18,6 +18,22 @@ export function telegramToken(env: NodeJS.ProcessEnv): string {
   return raw.trim();
 }
 
+export function openaiApiKey(env: NodeJS.ProcessEnv): string {
+  const raw = env.OPENAI_API_KEY;
+  if (raw === undefined || raw.trim() === "") {
+    throw new ConfigError("OPENAI_API_KEY is required");
+  }
+  return raw.trim();
+}
+
+export function openaiModel(env: NodeJS.ProcessEnv): string {
+  const raw = env.OPENAI_MODEL;
+  if (raw === undefined || raw.trim() === "") {
+    throw new ConfigError("OPENAI_MODEL is required");
+  }
+  return raw.trim();
+}
+
 export function allowedChatId(env: NodeJS.ProcessEnv): number {
   const raw = env.ALLOWED_CHAT_ID;
   if (raw === undefined || raw.trim() === "") {
