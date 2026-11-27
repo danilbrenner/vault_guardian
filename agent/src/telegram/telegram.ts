@@ -14,7 +14,14 @@ export function createBot(
   const bot = new Bot(token);
   bot.use(allowOnly(options.allowedChatId, options.log));
   bot.on("message:text", async (ctx) => {
-    await ctx.reply(REPLY);
+    await ctx.react("👀");
+    await ctx.reply(REPLY, {
+      reply_parameters: {
+        message_id: ctx.message.message_id,
+        quote: ctx.message.text,
+      },
+    });
+    await ctx.react("👍");
   });
   return bot;
 }

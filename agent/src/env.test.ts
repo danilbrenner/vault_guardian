@@ -42,5 +42,6 @@ test("runtime dependency is grammY only", () => {
   const deps: Record<string, string> = pkg.dependencies ?? {};
   const devDeps: Record<string, string> = pkg.devDependencies ?? {};
   assert.deepEqual(Object.keys(deps), ["grammy"]);
-  assert.equal(typeof devDeps["dotenv-cli"], "string");
+  assert.equal(typeof devDeps["dotenv"], "string");
+  assert.equal(devDeps["dotenv-cli"], undefined);
 });

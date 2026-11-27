@@ -7,12 +7,12 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "start": "dotenv -- node src/index.ts",
-    "test": "dotenv -- tsc --noEmit && dotenv -- node --test src"
+    "start": "npx dotenv run -- node src/index.ts",
+    "test": "npx dotenv run -- tsc --noEmit && npx dotenv run -- node --test src"
   },
   "devDependencies": {
     "@types/node": "^26.6.11",
-    "dotenv-cli": "^11.1.0",
+    "dotenv": "^18.0.10",
     "typescript": "^7.0.2"
   },
   "dependencies": {

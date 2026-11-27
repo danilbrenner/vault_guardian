@@ -1,5 +1,5 @@
 // Required configuration is read from the process environment.
-// dotenv-cli loads .env before the process starts. This module does not.
+// The dotenv CLI loads .env before the process starts. This module does not.
 
 const INTEGER = /^-?\d+$/;
 
